@@ -10,6 +10,8 @@ const $ = (id) => document.getElementById(id);
 
 document.addEventListener("DOMContentLoaded", () => {
   $("refresh").addEventListener("click", loadDashboard);
+  $("loadTable").addEventListener("click", loadTablePreview);
+  $("dbTable").addEventListener("change", loadTablePreview);
   ["market", "symbol", "interval"].forEach((id) => {
     $(id).addEventListener("change", loadDashboard);
   });
@@ -19,6 +21,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
   loadDashboard();
+  loadTablePreview();
   startAutoRefresh();
 });
 
@@ -49,6 +52,31 @@ async function loadDashboard() {
   } finally {
     $("refresh").disabled = false;
     state.loading = false;
+  }
+}
+
+async function loadTablePreview() {
+  const params = new URLSearchParams({
+    name: $("dbTable").value,
+    limit: "50",
+  });
+
+  $("loadTable").disabled = true;
+  try {
+    const response = await fetch(`/api/table?${params.toString()}`, {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      throw new Error(`请求失败 ${response.status}`);
+    }
+    renderTablePreview(await response.json());
+  } catch (error) {
+    $("dbTableMeta").textContent = `加载失败：${error.message}`;
+    $("dbTableHead").innerHTML = "";
+    $("dbTableRows").innerHTML = "";
+  } finally {
+    $("loadTable").disabled = false;
   }
 }
 
@@ -278,6 +306,20 @@ function renderBacktestLogs(rows) {
       </tr>`,
     )
     .join("") || emptyRow(7);
+}
+
+function renderTablePreview(table) {
+  const columns = (table.columns || []).slice(0, 12);
+  $("dbTableMeta").textContent =
+    `${table.name} / 共 ${number(table.total_rows)} 行 / 最近 ${number((table.rows || []).length)} 行 / 按 ${table.sort_column} 倒序`;
+  $("dbTableHead").innerHTML = `<tr>${columns.map((column) => `<th>${escapeHTML(column)}</th>`).join("")}</tr>`;
+  $("dbTableRows").innerHTML = (table.rows || [])
+    .map(
+      (row) => `<tr>
+        ${columns.map((column) => `<td>${escapeHTML(compactCell(row[column]))}</td>`).join("")}
+      </tr>`,
+    )
+    .join("") || emptyRow(Math.max(columns.length, 1));
 }
 
 function renderTradeActions(data) {
@@ -514,6 +556,14 @@ function formatPctValue(value) {
 
 function positionMetric(label, value) {
   return `<span><em>${escapeHTML(label)}</em><strong>${escapeHTML(value)}</strong></span>`;
+}
+
+function compactCell(value) {
+  const text = String(value ?? "");
+  if (text.length <= 80) {
+    return text;
+  }
+  return `${text.slice(0, 77)}...`;
 }
 
 function compact(value) {

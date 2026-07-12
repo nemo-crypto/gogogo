@@ -156,6 +156,38 @@
           </div>
         </article>
       </section>
+
+      <section class="panel db-browser" aria-label="数据库浏览器">
+        <div class="panel-head">
+          <div>
+            <h2>数据库浏览器</h2>
+            <p id="dbTableMeta">选择表查看 data.db 最近记录</p>
+          </div>
+          <div class="db-controls">
+            <select id="dbTable">
+              <option value="backtest_runs">backtest_runs</option>
+              <option value="positions">positions</option>
+              <option value="balances">balances</option>
+              <option value="orders">orders</option>
+              <option value="signals">signals</option>
+              <option value="performance_snapshots">performance_snapshots</option>
+              <option value="candles">candles</option>
+              <option value="funding_rates">funding_rates</option>
+              <option value="mark_prices">mark_prices</option>
+              <option value="risk_events">risk_events</option>
+              <option value="strategy_runs">strategy_runs</option>
+              <option value="candle_snapshots">candle_snapshots</option>
+            </select>
+            <button id="loadTable" type="button">查看</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table id="dbTablePreview">
+            <thead id="dbTableHead"></thead>
+            <tbody id="dbTableRows"></tbody>
+          </table>
+        </div>
+      </section>
     </main>
 
     <script src="/static/app.js"></script>

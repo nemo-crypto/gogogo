@@ -38,6 +38,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("GET /favicon.ico", s.favicon)
 	mux.HandleFunc("GET /api/dashboard", s.dashboard)
+	mux.HandleFunc("GET /api/table", s.table)
 
 	staticFS, err := fs.Sub(content, "static")
 	if err != nil {
@@ -86,6 +87,24 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, data)
 }
 
+func (s *Server) table(w http.ResponseWriter, r *http.Request) {
+	tableName := strings.TrimSpace(r.URL.Query().Get("name"))
+	if tableName == "" {
+		tableName = "backtest_runs"
+	}
+	if !isAllowedTable(tableName) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported table"})
+		return
+	}
+	limit := parseLimit(r.URL.Query().Get("limit"), 50, 200)
+	data, err := s.loadTablePreview(r.Context(), tableName, limit)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, data)
+}
+
 type dashboardQuery struct {
 	Exchange   string `json:"exchange"`
 	MarketType string `json:"market_type"`
@@ -114,6 +133,16 @@ type Data struct {
 	FundingRates         []FundingRate         `json:"funding_rates"`
 	MarkPrices           []MarkPrice           `json:"mark_prices"`
 	Warnings             []string              `json:"warnings,omitempty"`
+}
+
+type TablePreview struct {
+	Name       string              `json:"name"`
+	Columns    []string            `json:"columns"`
+	Rows       []map[string]string `json:"rows"`
+	TotalRows  int64               `json:"total_rows"`
+	Limit      int                 `json:"limit"`
+	LoadedAt   time.Time           `json:"loaded_at"`
+	SortColumn string              `json:"sort_column"`
 }
 
 type RuntimeState struct {
@@ -493,6 +522,92 @@ LIMIT ?;
 	return records, nil
 }
 
+func (s *Server) loadTablePreview(ctx context.Context, tableName string, limit int) (TablePreview, error) {
+	columns, err := s.tableColumns(ctx, tableName)
+	if err != nil {
+		return TablePreview{}, err
+	}
+	sortColumn := tableSortColumn(tableName, columns)
+	totalRows, err := s.countTable(ctx, tableName)
+	if err != nil {
+		return TablePreview{}, err
+	}
+
+	query := fmt.Sprintf("SELECT * FROM %s ORDER BY %s DESC LIMIT ?;", tableName, sortColumn)
+	rows, err := s.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return TablePreview{}, err
+	}
+	defer rows.Close()
+
+	values := make([]sql.NullString, len(columns))
+	dest := make([]any, len(columns))
+	for i := range values {
+		dest[i] = &values[i]
+	}
+
+	records := make([]map[string]string, 0, limit)
+	for rows.Next() {
+		for i := range values {
+			values[i] = sql.NullString{}
+		}
+		if err := rows.Scan(dest...); err != nil {
+			return TablePreview{}, err
+		}
+		record := make(map[string]string, len(columns))
+		for i, column := range columns {
+			if values[i].Valid {
+				record[column] = values[i].String
+			} else {
+				record[column] = ""
+			}
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return TablePreview{}, err
+	}
+
+	return TablePreview{
+		Name:       tableName,
+		Columns:    columns,
+		Rows:       records,
+		TotalRows:  totalRows,
+		Limit:      limit,
+		LoadedAt:   time.Now().UTC(),
+		SortColumn: sortColumn,
+	}, nil
+}
+
+func (s *Server) tableColumns(ctx context.Context, tableName string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, "PRAGMA table_info("+tableName+");")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	columns := make([]string, 0)
+	for rows.Next() {
+		var cid int
+		var name string
+		var dataType string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &pk); err != nil {
+			return nil, err
+		}
+		columns = append(columns, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(columns) == 0 {
+		return nil, fmt.Errorf("table %s has no columns", tableName)
+	}
+	return columns, nil
+}
+
 func (s *Server) loadBacktests(ctx context.Context) ([]BacktestRun, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, strategy_name, exchange, market_type, symbol, interval,
@@ -804,6 +919,73 @@ func parseLimit(raw string, fallback int, maxValue int) int {
 		return maxValue
 	}
 	return value
+}
+
+func isAllowedTable(tableName string) bool {
+	_, ok := allowedTables()[tableName]
+	return ok
+}
+
+func allowedTables() map[string]struct{} {
+	return map[string]struct{}{
+		"account_modes":         {},
+		"backtest_runs":         {},
+		"balances":              {},
+		"candle_snapshots":      {},
+		"candles":               {},
+		"contract_specs":        {},
+		"funding_rates":         {},
+		"index_prices":          {},
+		"items":                 {},
+		"leverage_brackets":     {},
+		"margin_snapshots":      {},
+		"mark_prices":           {},
+		"order_books":           {},
+		"orders":                {},
+		"performance_snapshots": {},
+		"positions":             {},
+		"risk_events":           {},
+		"signals":               {},
+		"strategy_runs":         {},
+		"trades":                {},
+	}
+}
+
+func tableSortColumn(tableName string, columns []string) string {
+	preferred := map[string]string{
+		"backtest_runs":         "created_at",
+		"balances":              "snapshot_time",
+		"candle_snapshots":      "created_at",
+		"candles":               "open_time",
+		"funding_rates":         "funding_time",
+		"index_prices":          "event_time",
+		"margin_snapshots":      "snapshot_time",
+		"mark_prices":           "event_time",
+		"order_books":           "event_time",
+		"orders":                "created_at",
+		"performance_snapshots": "snapshot_time",
+		"positions":             "snapshot_time",
+		"risk_events":           "event_time",
+		"signals":               "signal_time",
+		"strategy_runs":         "created_at",
+		"trades":                "trade_time",
+	}
+	if column, ok := preferred[tableName]; ok && hasColumn(columns, column) {
+		return column
+	}
+	if hasColumn(columns, "id") {
+		return "id"
+	}
+	return columns[0]
+}
+
+func hasColumn(columns []string, target string) bool {
+	for _, column := range columns {
+		if column == target {
+			return true
+		}
+	}
+	return false
 }
 
 func firstNonEmpty(value string, fallback string) string {

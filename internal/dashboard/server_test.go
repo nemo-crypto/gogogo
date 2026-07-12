@@ -69,6 +69,61 @@ func TestDashboardPage(t *testing.T) {
 	}
 }
 
+func TestTablePreviewAPI(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	if err := storage.InitSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+	seedDashboardData(t, db)
+
+	server := NewServer(db, "")
+	request := httptest.NewRequest(http.MethodGet, "/api/table?name=backtest_runs&limit=5", nil)
+	response := httptest.NewRecorder()
+	server.Routes().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var preview TablePreview
+	if err := json.NewDecoder(response.Body).Decode(&preview); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if preview.Name != "backtest_runs" {
+		t.Fatalf("table name = %q", preview.Name)
+	}
+	if preview.TotalRows != 1 {
+		t.Fatalf("total rows = %d, want 1", preview.TotalRows)
+	}
+	if len(preview.Rows) != 1 {
+		t.Fatalf("rows length = %d, want 1", len(preview.Rows))
+	}
+	if preview.Rows[0]["strategy_name"] != "sma_crossover_12_48" {
+		t.Fatalf("strategy name = %q", preview.Rows[0]["strategy_name"])
+	}
+}
+
+func TestTablePreviewRejectsUnsupportedTable(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db, "")
+	request := httptest.NewRequest(http.MethodGet, "/api/table?name=sqlite_master", nil)
+	response := httptest.NewRecorder()
+	server.Routes().ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+}
+
 func seedDashboardData(t *testing.T, db *sql.DB) {
 	t.Helper()
 	now := time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)

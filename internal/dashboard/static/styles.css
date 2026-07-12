@@ -277,6 +277,22 @@ button {
   font-size: 12px;
 }
 
+.db-browser {
+  margin-bottom: 16px;
+}
+
+.db-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#dbTablePreview td {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .chart-panel {
   min-height: 412px;
 }
@@ -635,6 +651,12 @@ th.numeric {
   select,
   button {
     width: 100%;
+  }
+
+  .db-controls {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr;
   }
 
   .toolbar {
