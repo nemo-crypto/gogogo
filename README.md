@@ -55,6 +55,7 @@ cmd/
   backtest/         # 运行 SMA 回测并保存结果
   backtestreport/   # 查询和排序回测结果
   walkforward/      # 样本外 walk-forward 验证
+  dashboard/        # 本地网页看板，读取 SQLite 量化数据
   riskcheck/        # 本地下单意图风控检查
   dryrunorder/      # 写入 dry-run 订单和风险事件
   accountsnapshot/  # 写入本地账户、仓位、保证金快照
@@ -64,6 +65,7 @@ cmd/
   emergency/        # 本地人工急停开关
 internal/
   exchange/         # 交易所抽象接口
+  dashboard/        # Dashboard HTTP handler 与内嵌静态资源
   exchange/binance/ # Binance 公开行情 client
   marketdata/       # 行情/资金费率/标记价格 SQLite 存取
   backtest/         # 回测、报告、walk-forward
@@ -255,6 +257,26 @@ go run ./cmd/walkforward \
   -train-window 240 \
   -test-window 120 \
   -fee-rate 0.001
+```
+
+## Dashboard 看板
+
+启动本地网页看板：
+
+```bash
+HTTP_ADDR=:8081 DATABASE_DSN=/Users/guilinzhou/Desktop/test-nemo/gogogo/data.db go run ./cmd/dashboard
+```
+
+浏览器访问：
+
+```text
+http://localhost:8081
+```
+
+看板当前读取 `data.db` 中的行情覆盖、价格曲线、回测结果、快照、dry-run 订单、风险事件、账户/仓位/保证金快照、策略信号、paper trading 绩效、资金费率和标记价格。接口为只读：
+
+```text
+GET /api/dashboard?market=spot&symbol=BTCUSDT&interval=1h
 ```
 
 ## 风控检查
