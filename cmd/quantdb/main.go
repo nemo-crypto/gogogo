@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gogogo/internal/marketdata"
+	"gogogo/internal/storage"
 )
 
 func main() {
@@ -20,8 +21,11 @@ func main() {
 		log.Fatalf("open quant sqlite database: %v", err)
 	}
 	defer db.Close()
+	if err := storage.InitSQLiteSchema(ctx, db); err != nil {
+		log.Fatalf("init full quant sqlite schema: %v", err)
+	}
 
-	log.Printf("quant market data schema ready, sqlite dsn=%s", dsn)
+	log.Printf("quant sqlite schema ready, sqlite dsn=%s", dsn)
 }
 
 func env(key, fallback string) string {

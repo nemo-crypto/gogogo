@@ -121,6 +121,27 @@ func TestClientFundingRates(t *testing.T) {
 	}
 }
 
+func TestClientServerTime(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v3/time" {
+			t.Fatalf("path = %s, want /api/v3/time", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"serverTime":1655971200000}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(WithBaseURLs(server.URL, ""))
+	got, err := client.ServerTime(context.Background(), marketdata.MarketTypeSpot)
+	if err != nil {
+		t.Fatalf("server time: %v", err)
+	}
+	if got.UnixMilli() != 1655971200000 {
+		t.Fatalf("server time = %d, want 1655971200000", got.UnixMilli())
+	}
+}
+
 func TestClientLatestMarkPrice(t *testing.T) {
 	t.Parallel()
 

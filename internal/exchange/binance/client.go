@@ -219,6 +219,39 @@ func (c *Client) LatestMarkPrice(ctx context.Context, symbol string) (marketdata
 	return raw.toMarkPrice(), nil
 }
 
+func (c *Client) ServerTime(ctx context.Context, marketType marketdata.MarketType) (time.Time, error) {
+	baseURL := c.spotBaseURL
+	path := "/api/v3/time"
+	if marketType == marketdata.MarketTypePerpetual {
+		baseURL = c.futuresBaseURL
+		path = "/fapi/v1/time"
+	}
+	endpoint, err := url.Parse(baseURL)
+	if err != nil {
+		return time.Time{}, err
+	}
+	endpoint.Path = path
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return time.Time{}, err
+	}
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return time.Time{}, fmt.Errorf("binance server time status %d", response.StatusCode)
+	}
+	var raw struct {
+		ServerTime int64 `json:"serverTime"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&raw); err != nil {
+		return time.Time{}, err
+	}
+	return time.UnixMilli(raw.ServerTime).UTC(), nil
+}
+
 func (c *Client) klineEndpoint(marketType marketdata.MarketType) (*url.URL, error) {
 	baseURL := c.spotBaseURL
 	path := "/api/v3/klines"

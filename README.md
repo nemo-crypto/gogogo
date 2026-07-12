@@ -1,8 +1,8 @@
 # gogogo
 
-一个使用 Go 标准库 + SQLite 构建的币圈量化研究原型。目前重点是本地行情存储、Binance 公开行情同步、K 线质量检查、回测数据快照、SMA 趋势策略回测、参数扫描、回测报告和 walk-forward 验证。
+一个使用 Go 标准库 + SQLite 构建的币圈量化研究原型。目前覆盖本地行情存储、Binance 公开行情同步、K 线质量检查、回测数据快照、SMA 趋势策略回测、参数扫描、回测报告、walk-forward 验证、账户/仓位快照、paper trading、本地风控检查、dry-run 下单审计、每日报告、SQLite 备份和人工急停开关。
 
-当前系统不使用 API key、不下单、不做实盘交易。所有已实现命令都是只读公开行情或本地回测。
+当前系统不会向交易所提交真实订单。已实现命令以公开行情、本地回测、本地账户建模、paper trading 和 dry-run 订单审计为主；真实 API key、只读账户查询和 live 交易仍需要单独接入交易所私有 API 并完成安全审批。
 
 ## 已实现功能
 
@@ -13,15 +13,35 @@
   - 永续合约标记价格
 - 本地数据表：
   - `candles`
+  - `trades`
+  - `order_books`
   - `funding_rates`
   - `mark_prices`
+  - `index_prices`
   - `candle_snapshots`
   - `backtest_runs`
+  - `orders`
+  - `risk_events`
+  - `balances`
+  - `positions`
+  - `margin_snapshots`
+  - `contract_specs`
+  - `leverage_brackets`
+  - `account_modes`
+  - `strategy_runs`
+  - `signals`
+  - `performance_snapshots`
 - K 线缺口检查和回测数据快照冻结
 - SMA 均线交叉回测
 - 多币种、多参数网格扫描
 - 回测结果落库和排名报告
 - Walk-forward 样本外验证
+- 研究函数：动量轮动、均值回归、现货 + 合约对冲比例
+- 基础风控检查：单笔风险、单币种敞口、总敞口、杠杆、日亏损、连续亏损、强平距离、资金费率
+- Dry-run 下单日志：计划订单、风控结论、风险事件落库，不触发真实交易
+- Paper trading：基于本地历史 K 线生成策略运行、信号和绩效快照
+- 账户/仓位/保证金快照：本地写入 balances、positions、margin_snapshots
+- 每日运行报告、SQLite 备份、人工 emergency halt/resume
 - 保留原有轻量 CRUD API 示例，主要用于 HTTP/API 结构参考
 
 ## 目录结构
@@ -35,14 +55,40 @@ cmd/
   backtest/         # 运行 SMA 回测并保存结果
   backtestreport/   # 查询和排序回测结果
   walkforward/      # 样本外 walk-forward 验证
+  riskcheck/        # 本地下单意图风控检查
+  dryrunorder/      # 写入 dry-run 订单和风险事件
+  accountsnapshot/  # 写入本地账户、仓位、保证金快照
+  papertrade/       # 基于本地 K 线运行 paper trading
+  dailyreport/      # 汇总订单、风险事件、信号、快照等每日指标
+  backupdb/         # 备份 SQLite data.db
+  emergency/        # 本地人工急停开关
 internal/
+  exchange/         # 交易所抽象接口
   exchange/binance/ # Binance 公开行情 client
   marketdata/       # 行情/资金费率/标记价格 SQLite 存取
   backtest/         # 回测、报告、walk-forward
+  risk/             # 本地风控规则
+  execution/        # dry-run 订单日志和风险事件
+  portfolio/        # 账户、仓位、保证金快照
+  strategy/         # 策略运行、信号、绩效快照和研究函数
+  storage/          # 统一 SQLite schema 初始化和迁移边界
+  runtime/          # 本地 emergency halt guard
   item/             # 原 CRUD 示例领域
   httpapi/          # 原 CRUD 示例 HTTP API
 docs/
   quant-trading-strategy-todo.md
+```
+
+## 配置
+
+参考 `.env.example` 设置本地变量。不要把真实 `.env`、API key、secret、passphrase 或账户截图提交到仓库。
+
+```bash
+DATABASE_DSN=/Users/guilinzhou/Desktop/test-nemo/gogogo/data.db
+TRADING_MODE=dry_run
+EXCHANGE_NAME=binance
+MAX_LEVERAGE=3
+BACKUP_PATH=/Users/guilinzhou/Desktop/test-nemo/gogogo/backups
 ```
 
 ## 初始化数据库
@@ -211,6 +257,153 @@ go run ./cmd/walkforward \
   -fee-rate 0.001
 ```
 
+## 风控检查
+
+保守现货订单示例：
+
+```bash
+go run ./cmd/riskcheck \
+  -market spot \
+  -symbol BTCUSDT \
+  -side buy \
+  -price 60000 \
+  -quantity 0.02 \
+  -stop-price 58000 \
+  -equity 10000 \
+  -total-exposure 2000 \
+  -symbol-exposure 1000
+```
+
+高杠杆合约订单示例，会被拒绝：
+
+```bash
+go run ./cmd/riskcheck \
+  -market perpetual \
+  -symbol SOLUSDT \
+  -side buy \
+  -price 150 \
+  -quantity 10 \
+  -stop-price 148 \
+  -leverage 5 \
+  -liquidation-price 140 \
+  -funding-rate-pct 0.08 \
+  -equity 10000
+```
+
+## Dry-run 下单日志
+
+允许通过风控的 dry-run 订单会写入 `orders`：
+
+```bash
+go run ./cmd/dryrunorder \
+  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -account research \
+  -strategy manual-dry-run \
+  -client-order-id dryrun-btc-spot-allow-20260712 \
+  -market spot \
+  -symbol BTCUSDT \
+  -side buy \
+  -price 60000 \
+  -quantity 0.02 \
+  -stop-price 58000 \
+  -equity 10000 \
+  -total-exposure 2000 \
+  -symbol-exposure 1000
+```
+
+被风控拒绝的 dry-run 订单会写入 `orders` 和 `risk_events`：
+
+```bash
+go run ./cmd/dryrunorder \
+  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -account research \
+  -strategy manual-dry-run \
+  -client-order-id dryrun-sol-perp-reject-20260712 \
+  -market perpetual \
+  -symbol SOLUSDT \
+  -side buy \
+  -price 150 \
+  -quantity 10 \
+  -stop-price 148 \
+  -leverage 5 \
+  -liquidation-price 140 \
+  -funding-rate-pct 0.08 \
+  -equity 10000
+```
+
+## 账户快照
+
+写入本地 paper 账户余额、仓位和保证金快照：
+
+```bash
+go run ./cmd/accountsnapshot \
+  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -account paper \
+  -exchange binance \
+  -market perpetual \
+  -asset USDT \
+  -equity 10000 \
+  -free 9000 \
+  -locked 1000 \
+  -symbol BTCUSDT \
+  -quantity 0.01 \
+  -entry-price 60000 \
+  -mark-price 61000 \
+  -liquidation-price 45000 \
+  -leverage 1 \
+  -margin-balance 10000
+```
+
+## Paper Trading
+
+基于已同步的本地 K 线运行 SMA paper trading，并写入 `strategy_runs`、`signals`、`performance_snapshots`。如果最新信号是买入，会额外写入 dry-run 订单审计。
+
+```bash
+go run ./cmd/papertrade \
+  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -account paper \
+  -strategy sma-paper \
+  -market spot \
+  -symbol BTCUSDT \
+  -interval 1h \
+  -start 2026-06-12T00:00:00Z \
+  -end 2026-07-12T00:00:00Z \
+  -fast 12 \
+  -slow 48 \
+  -equity 10000 \
+  -quantity 0.01
+```
+
+## 每日报告
+
+统计指定时间之后的订单、风险事件、信号、策略运行、账户快照和仓位快照：
+
+```bash
+go run ./cmd/dailyreport \
+  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -since 2026-07-12T00:00:00Z
+```
+
+## 备份
+
+把当前 SQLite 数据库复制到备份目录：
+
+```bash
+BACKUP_PATH=/Users/guilinzhou/Desktop/test-nemo/gogogo/backups \
+DATABASE_DSN=/Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+go run ./cmd/backupdb
+```
+
+## 急停开关
+
+本地 emergency guard 使用 `.runtime/halt` 文件表示停机状态：
+
+```bash
+go run ./cmd/emergency -action status
+go run ./cmd/emergency -action halt -reason manual_review
+go run ./cmd/emergency -action resume
+```
+
 ## 原 CRUD API 示例
 
 原有 HTTP API 仍可运行：
@@ -243,6 +436,8 @@ go test ./...
 ## 注意事项
 
 - 当前项目是量化研究原型，不是实盘交易系统。
-- 当前不会读取 API key，不会下单，不会转账。
-- `data.db` 已包含真实公开行情和回测结果，不建议提交到 git。
-- 回测结果不能代表未来收益，必须继续做更长历史区间、样本外验证、手续费/滑点建模和 paper trading。
+- 当前不会转账，也不会向交易所提交真实订单。
+- `.env.example` 只提供变量名和默认边界，不包含真实密钥。
+- `data.db` 已包含公开行情、回测结果、dry-run 订单、账户快照、paper trading 结果和风险事件，不建议提交到 git。
+- `backups/` 是本地数据库备份目录，不建议提交到 git。
+- 当前 SMA paper/backtest 结果不构成上线建议；进入 live 前必须完成长区间回测、连续 paper trading、真实只读账户校验和小资金灰度审批。

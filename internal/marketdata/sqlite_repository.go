@@ -60,8 +60,41 @@ CREATE TABLE IF NOT EXISTS candles (
 	UNIQUE(exchange, market_type, symbol, interval, open_time)
 );
 
-CREATE INDEX IF NOT EXISTS idx_candles_lookup
-ON candles (exchange, market_type, symbol, interval, open_time);
+	CREATE INDEX IF NOT EXISTS idx_candles_lookup
+	ON candles (exchange, market_type, symbol, interval, open_time);
+
+	CREATE TABLE IF NOT EXISTS trades (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		exchange TEXT NOT NULL,
+		market_type TEXT NOT NULL CHECK (market_type IN ('spot', 'perpetual')),
+		symbol TEXT NOT NULL,
+		trade_id TEXT NOT NULL,
+		price TEXT NOT NULL,
+		quantity TEXT NOT NULL,
+		quote_quantity TEXT NOT NULL DEFAULT '',
+		side TEXT NOT NULL DEFAULT '',
+		trade_time DATETIME NOT NULL,
+		created_at DATETIME NOT NULL,
+		UNIQUE(exchange, market_type, symbol, trade_id)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_trades_lookup
+	ON trades (exchange, market_type, symbol, trade_time);
+
+	CREATE TABLE IF NOT EXISTS order_books (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		exchange TEXT NOT NULL,
+		market_type TEXT NOT NULL CHECK (market_type IN ('spot', 'perpetual')),
+		symbol TEXT NOT NULL,
+		event_time DATETIME NOT NULL,
+		bids_json TEXT NOT NULL,
+		asks_json TEXT NOT NULL,
+		created_at DATETIME NOT NULL,
+		UNIQUE(exchange, market_type, symbol, event_time)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_order_books_lookup
+	ON order_books (exchange, market_type, symbol, event_time);
 
 CREATE TABLE IF NOT EXISTS funding_rates (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -93,6 +126,19 @@ CREATE TABLE IF NOT EXISTS mark_prices (
 
 	CREATE INDEX IF NOT EXISTS idx_mark_prices_lookup
 	ON mark_prices (exchange, symbol, event_time);
+
+	CREATE TABLE IF NOT EXISTS index_prices (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		exchange TEXT NOT NULL,
+		symbol TEXT NOT NULL,
+		event_time DATETIME NOT NULL,
+		index_price TEXT NOT NULL,
+		created_at DATETIME NOT NULL,
+		UNIQUE(exchange, symbol, event_time)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_index_prices_lookup
+	ON index_prices (exchange, symbol, event_time);
 
 	CREATE TABLE IF NOT EXISTS candle_snapshots (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,

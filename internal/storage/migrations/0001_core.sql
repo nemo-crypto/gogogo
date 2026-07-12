@@ -1,0 +1,2 @@
+-- Core local SQLite schema is initialized from Go by internal/storage.InitSQLiteSchema.
+-- This file documents the migration boundary for future versioned migrations.
