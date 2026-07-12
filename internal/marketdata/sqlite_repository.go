@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -90,12 +91,32 @@ CREATE TABLE IF NOT EXISTS mark_prices (
 	UNIQUE(exchange, symbol, event_time)
 );
 
-CREATE INDEX IF NOT EXISTS idx_mark_prices_lookup
-ON mark_prices (exchange, symbol, event_time);
+	CREATE INDEX IF NOT EXISTS idx_mark_prices_lookup
+	ON mark_prices (exchange, symbol, event_time);
 
-CREATE TABLE IF NOT EXISTS backtest_runs (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	strategy_name TEXT NOT NULL,
+	CREATE TABLE IF NOT EXISTS candle_snapshots (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL,
+		exchange TEXT NOT NULL,
+		market_type TEXT NOT NULL CHECK (market_type IN ('spot', 'perpetual')),
+		symbol TEXT NOT NULL,
+		interval TEXT NOT NULL,
+		start_time DATETIME NOT NULL,
+		end_time DATETIME NOT NULL,
+		candle_count INTEGER NOT NULL,
+		expected_count INTEGER NOT NULL,
+		missing_count INTEGER NOT NULL,
+		gap_count INTEGER NOT NULL,
+		data_hash TEXT NOT NULL,
+		created_at DATETIME NOT NULL
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_candle_snapshots_lookup
+	ON candle_snapshots (name, exchange, market_type, symbol, interval, created_at);
+
+	CREATE TABLE IF NOT EXISTS backtest_runs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		strategy_name TEXT NOT NULL,
 	exchange TEXT NOT NULL,
 	market_type TEXT NOT NULL,
 	symbol TEXT NOT NULL,
@@ -219,6 +240,122 @@ LIMIT ?;
 	}
 
 	return candles, nil
+}
+
+func (r *SQLiteRepository) ListCandlesFull(ctx context.Context, query CandleQuery) ([]Candle, error) {
+	query, err := normalizeCandleQuery(query)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+	SELECT exchange, market_type, symbol, interval, open_time, close_time,
+		open_price, high_price, low_price, close_price, volume, quote_volume,
+		trade_count, source, created_at, updated_at
+	FROM candles
+	WHERE exchange = ?
+		AND market_type = ?
+		AND symbol = ?
+		AND interval = ?
+		AND open_time >= ?
+		AND open_time < ?
+	ORDER BY open_time ASC;
+	`,
+		query.Exchange,
+		string(query.MarketType),
+		query.Symbol,
+		query.Interval,
+		query.Start,
+		query.End,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	candles := make([]Candle, 0)
+	for rows.Next() {
+		candle, err := scanCandle(rows)
+		if err != nil {
+			return nil, err
+		}
+		candles = append(candles, candle)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return candles, nil
+}
+
+func (r *SQLiteRepository) CreateCandleSnapshot(ctx context.Context, request CandleSnapshotRequest) (CandleSnapshot, CandleCoverage, error) {
+	name := strings.TrimSpace(request.Name)
+	if name == "" {
+		return CandleSnapshot{}, CandleCoverage{}, errors.New("snapshot name is required")
+	}
+
+	query, err := normalizeCandleQuery(request.Query)
+	if err != nil {
+		return CandleSnapshot{}, CandleCoverage{}, err
+	}
+	candles, err := r.ListCandlesFull(ctx, query)
+	if err != nil {
+		return CandleSnapshot{}, CandleCoverage{}, err
+	}
+	coverage, err := CheckCandleCoverage(candles, query)
+	if err != nil {
+		return CandleSnapshot{}, CandleCoverage{}, err
+	}
+	if request.RequireComplete && !coverage.Complete() {
+		return CandleSnapshot{}, coverage, errors.New("candle coverage is incomplete")
+	}
+
+	now := time.Now().UTC()
+	snapshot := CandleSnapshot{
+		Name:          name,
+		Exchange:      coverage.Exchange,
+		MarketType:    coverage.MarketType,
+		Symbol:        coverage.Symbol,
+		Interval:      coverage.Interval,
+		Start:         coverage.Start,
+		End:           coverage.End,
+		CandleCount:   coverage.CandleCount,
+		ExpectedCount: coverage.ExpectedCount,
+		MissingCount:  coverage.MissingCount,
+		GapCount:      len(coverage.Gaps),
+		DataHash:      CandleDataHash(candles),
+		CreatedAt:     now,
+	}
+
+	inserted, err := r.db.ExecContext(ctx, `
+	INSERT INTO candle_snapshots (
+		name, exchange, market_type, symbol, interval, start_time, end_time,
+		candle_count, expected_count, missing_count, gap_count, data_hash, created_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+	`,
+		snapshot.Name,
+		snapshot.Exchange,
+		string(snapshot.MarketType),
+		snapshot.Symbol,
+		snapshot.Interval,
+		snapshot.Start,
+		snapshot.End,
+		snapshot.CandleCount,
+		snapshot.ExpectedCount,
+		snapshot.MissingCount,
+		snapshot.GapCount,
+		snapshot.DataHash,
+		snapshot.CreatedAt,
+	)
+	if err != nil {
+		return CandleSnapshot{}, CandleCoverage{}, err
+	}
+	snapshot.ID, err = inserted.LastInsertId()
+	if err != nil {
+		return CandleSnapshot{}, CandleCoverage{}, err
+	}
+
+	return snapshot, coverage, nil
 }
 
 func (r *SQLiteRepository) UpsertFundingRate(ctx context.Context, rate FundingRate) error {

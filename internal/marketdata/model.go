@@ -68,6 +68,53 @@ type CandleQuery struct {
 	Limit      int
 }
 
+type CandleGap struct {
+	Start        time.Time
+	End          time.Time
+	MissingCount int
+}
+
+type CandleCoverage struct {
+	Exchange         string
+	MarketType       MarketType
+	Symbol           string
+	Interval         string
+	Start            time.Time
+	End              time.Time
+	IntervalDuration time.Duration
+	CandleCount      int
+	ExpectedCount    int
+	MissingCount     int
+	Gaps             []CandleGap
+}
+
+func (c CandleCoverage) Complete() bool {
+	return c.MissingCount == 0
+}
+
+type CandleSnapshot struct {
+	ID            int64
+	Name          string
+	Exchange      string
+	MarketType    MarketType
+	Symbol        string
+	Interval      string
+	Start         time.Time
+	End           time.Time
+	CandleCount   int
+	ExpectedCount int
+	MissingCount  int
+	GapCount      int
+	DataHash      string
+	CreatedAt     time.Time
+}
+
+type CandleSnapshotRequest struct {
+	Name            string
+	Query           CandleQuery
+	RequireComplete bool
+}
+
 type FundingRateQuery struct {
 	Exchange string
 	Symbol   string

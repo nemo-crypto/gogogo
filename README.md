@@ -1,6 +1,6 @@
 # gogogo
 
-一个使用 Go 标准库 + SQLite 构建的币圈量化研究原型。目前重点是本地行情存储、Binance 公开行情同步、SMA 趋势策略回测、参数扫描、回测报告和 walk-forward 验证。
+一个使用 Go 标准库 + SQLite 构建的币圈量化研究原型。目前重点是本地行情存储、Binance 公开行情同步、K 线质量检查、回测数据快照、SMA 趋势策略回测、参数扫描、回测报告和 walk-forward 验证。
 
 当前系统不使用 API key、不下单、不做实盘交易。所有已实现命令都是只读公开行情或本地回测。
 
@@ -15,7 +15,9 @@
   - `candles`
   - `funding_rates`
   - `mark_prices`
+  - `candle_snapshots`
   - `backtest_runs`
+- K 线缺口检查和回测数据快照冻结
 - SMA 均线交叉回测
 - 多币种、多参数网格扫描
 - 回测结果落库和排名报告
@@ -29,6 +31,7 @@ cmd/
   api/              # 原 CRUD API 示例
   quantdb/          # 初始化本地量化数据表
   marketsync/       # 同步 Binance 公开行情
+  datasnapshot/     # 检查 K 线缺口并冻结回测数据快照
   backtest/         # 运行 SMA 回测并保存结果
   backtestreport/   # 查询和排序回测结果
   walkforward/      # 样本外 walk-forward 验证
@@ -105,6 +108,39 @@ go run ./cmd/marketsync \
   -market perpetual \
   -symbols BTCUSDT
 ```
+
+## 数据质量与快照
+
+冻结现货近 1 个月 1h K 线快照。默认发现缺口会失败，不会写入快照：
+
+```bash
+go run ./cmd/datasnapshot \
+  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -market spot \
+  -symbols BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT \
+  -interval 1h \
+  -start 2026-06-12T00:00:00Z \
+  -end 2026-07-12T00:00:00Z \
+  -name spot-1h-20260612-20260712
+```
+
+冻结永续合约同区间快照：
+
+```bash
+go run ./cmd/datasnapshot \
+  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -market perpetual \
+  -symbols BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT \
+  -interval 1h \
+  -start 2026-06-12T00:00:00Z \
+  -end 2026-07-12T00:00:00Z \
+  -name perpetual-1h-20260612-20260712
+```
+
+当前本地 `data.db` 已冻结：
+
+- `spot-1h-20260612-20260712`：BTC/ETH/BNB/SOL 都是 720/720，无缺口。
+- `perpetual-1h-20260612-20260712`：BTC/ETH/BNB/SOL 都是 720/720，无缺口。
 
 ## 回测
 

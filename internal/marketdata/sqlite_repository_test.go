@@ -136,6 +136,63 @@ func TestSQLiteRepositoryLatestMarkPriceNotFound(t *testing.T) {
 	}
 }
 
+func TestSQLiteRepositoryCreateCandleSnapshot(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repo := newTestRepository(t, ctx)
+	start := time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)
+
+	for i := 0; i < 2; i++ {
+		if err := repo.UpsertCandle(ctx, Candle{
+			Exchange:    "binance",
+			MarketType:  MarketTypeSpot,
+			Symbol:      "BTCUSDT",
+			Interval:    "1h",
+			OpenTime:    start.Add(time.Duration(i) * time.Hour),
+			CloseTime:   start.Add(time.Duration(i+1) * time.Hour),
+			Open:        "100.00",
+			High:        "110.00",
+			Low:         "90.00",
+			Close:       "105.00",
+			Volume:      "10.00",
+			QuoteVolume: "1050.00",
+			TradeCount:  100,
+			Source:      "binance",
+		}); err != nil {
+			t.Fatalf("upsert candle %d: %v", i, err)
+		}
+	}
+
+	snapshot, coverage, err := repo.CreateCandleSnapshot(ctx, CandleSnapshotRequest{
+		Name: "unit-test",
+		Query: CandleQuery{
+			Exchange:   "binance",
+			MarketType: MarketTypeSpot,
+			Symbol:     "BTCUSDT",
+			Interval:   "1h",
+			Start:      start,
+			End:        start.Add(2 * time.Hour),
+		},
+	})
+	if err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
+
+	if snapshot.ID <= 0 {
+		t.Fatalf("snapshot id = %d, want positive", snapshot.ID)
+	}
+	if snapshot.CandleCount != 2 || snapshot.ExpectedCount != 2 || snapshot.MissingCount != 0 {
+		t.Fatalf("snapshot counts = candles:%d expected:%d missing:%d, want 2/2/0", snapshot.CandleCount, snapshot.ExpectedCount, snapshot.MissingCount)
+	}
+	if snapshot.DataHash == "" {
+		t.Fatal("snapshot data hash is empty")
+	}
+	if !coverage.Complete() {
+		t.Fatal("coverage complete = false, want true")
+	}
+}
+
 func newTestRepository(t *testing.T, ctx context.Context) *SQLiteRepository {
 	t.Helper()
 
