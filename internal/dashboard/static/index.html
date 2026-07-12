@@ -73,6 +73,47 @@
         </article>
       </section>
 
+      <section class="strategy-panel" aria-label="策略逻辑">
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>策略逻辑</h2>
+              <p id="strategySubtitle">当前运行策略说明</p>
+            </div>
+            <span id="strategyMode" class="pill">趋势跟随</span>
+          </div>
+          <div class="strategy-body">
+            <div class="strategy-summary">
+              <span>当前策略</span>
+              <strong id="strategyName">--</strong>
+              <p id="strategyPlainText">--</p>
+            </div>
+            <div class="rule-grid">
+              <div class="rule-card">
+                <span>买入条件</span>
+                <strong id="buyRule">--</strong>
+                <p>短期均线站上长期均线，代表近期价格强于长期趋势。</p>
+              </div>
+              <div class="rule-card">
+                <span>卖出条件</span>
+                <strong id="sellRule">--</strong>
+                <p>短期均线跌破长期均线，代表趋势走弱，策略退出仓位。</p>
+              </div>
+              <div class="rule-card">
+                <span>当前信号</span>
+                <strong id="currentSignal">--</strong>
+                <p id="signalReason">--</p>
+              </div>
+              <div class="rule-card">
+                <span>主要限制</span>
+                <strong id="strategyLimit">只做多，不做空</strong>
+                <p>回测按下一根 K 线价格成交，并扣除手续费；结果不代表实盘收益。</p>
+              </div>
+            </div>
+          </div>
+        </article>
+      </section>
+
       <section class="layout">
         <article class="panel chart-panel">
           <div class="panel-head">
@@ -128,6 +169,30 @@
           </div>
         </article>
 
+        <article class="panel">
+          <div class="panel-head">
+            <h2>回测入库日志</h2>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Run ID</th>
+                  <th>入库时间</th>
+                  <th>策略</th>
+                  <th>收益</th>
+                  <th>超额</th>
+                  <th>回撤</th>
+                  <th>交易数</th>
+                </tr>
+              </thead>
+              <tbody id="backtestLogRows"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section class="grid-two">
         <article class="panel">
           <div class="panel-head">
             <h2>订单与风控</h2>

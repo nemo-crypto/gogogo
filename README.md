@@ -1,6 +1,6 @@
 # gogogo
 
-一个使用 Go 标准库 + SQLite 构建的币圈量化研究原型。目前覆盖本地行情存储、Binance 公开行情同步、K 线质量检查、回测数据快照、SMA 趋势策略回测、参数扫描、回测报告、walk-forward 验证、账户/仓位快照、paper trading、本地风控检查、dry-run 下单审计、每日报告、SQLite 备份和人工急停开关。
+一个使用 Go 标准库 + SQLite 构建的币圈量化研究原型。目前覆盖本地行情存储、Binance 公开行情同步、K 线质量检查、回测数据快照、SMA 趋势策略回测、自适应趋势轮动回测、参数扫描、回测报告、walk-forward 验证、账户/仓位快照、paper trading、本地风控检查、dry-run 下单审计、每日报告、SQLite 备份和人工急停开关。
 
 当前系统不会向交易所提交真实订单。已实现命令以公开行情、本地回测、本地账户建模、paper trading 和 dry-run 订单审计为主；真实 API key、只读账户查询和 live 交易仍需要单独接入交易所私有 API 并完成安全审批。
 
@@ -33,6 +33,7 @@
   - `performance_snapshots`
 - K 线缺口检查和回测数据快照冻结
 - SMA 均线交叉回测
+- 多币种自适应趋势轮动：动量排名、趋势过滤、波动率控仓、移动止损、资金费率过滤
 - 多币种、多参数网格扫描
 - 回测结果落库和排名报告
 - Walk-forward 样本外验证
@@ -53,6 +54,7 @@ cmd/
   marketsync/       # 同步 Binance 公开行情
   datasnapshot/     # 检查 K 线缺口并冻结回测数据快照
   backtest/         # 运行 SMA 回测并保存结果
+  adaptivetrend/    # 运行多币种自适应趋势轮动回测并保存结果
   backtestreport/   # 查询和排序回测结果
   walkforward/      # 样本外 walk-forward 验证
   dashboard/        # 本地网页看板，读取 SQLite 量化数据
@@ -221,6 +223,32 @@ go run ./cmd/backtest \
   -slow 24,48,96 \
   -fee-rate 0.001
 ```
+
+运行多币种自适应趋势轮动策略。该策略会在多个币种中选择趋势和动量更强的标的，按波动率控制单币种仓位，触发移动止损时退出；如果同步了永续合约资金费率，也会过滤 funding 过高的追多交易：
+
+```bash
+go run ./cmd/adaptivetrend \
+  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -market spot \
+  -symbol BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT \
+  -interval 1h \
+  -start 2026-06-12T00:00:00Z \
+  -end 2026-07-12T00:00:00Z \
+  -momentum-window 24 \
+  -trend-window 72 \
+  -breakout-window 48 \
+  -volatility-window 24 \
+  -rebalance-window 6 \
+  -top-n 2 \
+  -target-volatility-pct 1 \
+  -max-position-pct 30 \
+  -trailing-stop-pct 6 \
+  -max-funding-rate-pct 0.05 \
+  -fee-rate 0.001 \
+  -slippage-rate 0.0005
+```
+
+`adaptivetrend` 默认会把结果写入 `backtest_runs`，因此可以继续用 `backtestreport` 和 Dashboard 查看结果。当前实现仍是本地回测，不会向交易所提交真实订单。
 
 ## 回测报告
 

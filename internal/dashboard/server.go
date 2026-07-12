@@ -148,6 +148,9 @@ type BacktestRun struct {
 	MarketType       string    `json:"market_type"`
 	Symbol           string    `json:"symbol"`
 	Interval         string    `json:"interval"`
+	FastWindow       int64     `json:"fast_window"`
+	SlowWindow       int64     `json:"slow_window"`
+	FeeRate          float64   `json:"fee_rate"`
 	TotalReturnPct   float64   `json:"total_return_pct"`
 	BuyHoldReturnPct float64   `json:"buy_hold_return_pct"`
 	ExcessReturnPct  float64   `json:"excess_return_pct"`
@@ -493,7 +496,7 @@ LIMIT ?;
 func (s *Server) loadBacktests(ctx context.Context) ([]BacktestRun, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, strategy_name, exchange, market_type, symbol, interval,
-	total_return_pct, buy_hold_return_pct, excess_return_pct, max_drawdown_pct,
+	fast_window, slow_window, fee_rate, total_return_pct, buy_hold_return_pct, excess_return_pct, max_drawdown_pct,
 	trade_count, win_rate_pct, created_at
 FROM backtest_runs
 ORDER BY created_at DESC
@@ -507,7 +510,7 @@ LIMIT 12;
 	records := make([]BacktestRun, 0)
 	for rows.Next() {
 		var record BacktestRun
-		if err := rows.Scan(&record.ID, &record.StrategyName, &record.Exchange, &record.MarketType, &record.Symbol, &record.Interval, &record.TotalReturnPct, &record.BuyHoldReturnPct, &record.ExcessReturnPct, &record.MaxDrawdownPct, &record.TradeCount, &record.WinRatePct, &record.CreatedAt); err != nil {
+		if err := rows.Scan(&record.ID, &record.StrategyName, &record.Exchange, &record.MarketType, &record.Symbol, &record.Interval, &record.FastWindow, &record.SlowWindow, &record.FeeRate, &record.TotalReturnPct, &record.BuyHoldReturnPct, &record.ExcessReturnPct, &record.MaxDrawdownPct, &record.TradeCount, &record.WinRatePct, &record.CreatedAt); err != nil {
 			return nil, err
 		}
 		records = append(records, record)
@@ -836,6 +839,7 @@ func isMissingTable(err error) bool {
 
 func writeJSON(w http.ResponseWriter, statusCode int, value any) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(statusCode)
 	if err := json.NewEncoder(w).Encode(value); err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
