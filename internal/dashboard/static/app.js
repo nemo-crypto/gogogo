@@ -26,7 +26,7 @@ async function loadDashboard() {
       headers: { Accept: "application/json" },
     });
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+      throw new Error(`请求失败 ${response.status}`);
     }
     state.data = await response.json();
     render(state.data);
@@ -38,9 +38,9 @@ async function loadDashboard() {
 }
 
 function render(data) {
-  $("subtitle").textContent = `${data.query.market_type} ${data.query.symbol} ${data.query.interval}`;
-  $("generatedAt").textContent = `updated ${formatTime(data.generated_at)}`;
-  $("runtimeBadge").textContent = data.runtime.halted ? "HALTED" : "RUNNING";
+  $("subtitle").textContent = `${marketLabel(data.query.market_type)} ${data.query.symbol} ${data.query.interval}`;
+  $("generatedAt").textContent = `更新于 ${formatTime(data.generated_at)}`;
+  $("runtimeBadge").textContent = data.runtime.halted ? "已停机" : "运行中";
   $("runtimeBadge").className = data.runtime.halted ? "badge badge-danger" : "badge badge-ok";
 
   renderWarnings(data.warnings || []);
@@ -73,30 +73,32 @@ function renderMetrics(data) {
   const series = data.price_series || [];
   const latest = series[series.length - 1];
   $("latestClose").textContent = latest ? money(latest.close) : "--";
-  $("latestMeta").textContent = latest ? formatTime(latest.time) : "no candles";
+  $("latestMeta").textContent = latest ? formatTime(latest.time) : "暂无 K 线";
 
   const backtests = data.backtests || [];
   const best = [...backtests].sort((a, b) => b.excess_return_pct - a.excess_return_pct)[0];
   $("runCount").textContent = number(data.counts.backtest_runs || 0);
-  $("bestBacktest").textContent = best ? `${best.symbol} excess ${pct(best.excess_return_pct)}` : "no runs";
+  $("bestBacktest").textContent = best ? `${best.symbol} 超额 ${pct(best.excess_return_pct)}` : "暂无回测";
 
   const risks = data.risk_events || [];
   $("riskCount").textContent = number(data.counts.risk_events || 0);
-  $("lastRisk").textContent = risks.length ? `${risks[0].symbol} ${risks[0].decision}` : "no risk event";
+  $("lastRisk").textContent = risks.length ? `${risks[0].symbol} ${decisionLabel(risks[0].decision)}` : "暂无风控事件";
 
   const performance = data.performance_snapshots || [];
   const latestPerf = performance[0];
   $("paperEquity").textContent = latestPerf ? money(latestPerf.equity) : "--";
-  $("paperPnL").textContent = latestPerf ? `PnL ${money(latestPerf.pnl)} / DD ${pct(latestPerf.drawdown_pct)}` : "no paper run";
+  $("paperPnL").textContent = latestPerf
+    ? `盈亏 ${money(latestPerf.pnl)} / 回撤 ${pct(latestPerf.drawdown_pct)}`
+    : "暂无模拟运行";
 }
 
 function renderChart(series) {
   const svg = $("priceChart");
   svg.replaceChildren();
-  $("seriesCount").textContent = `${series.length} points`;
+  $("seriesCount").textContent = `${series.length} 个点`;
   $("chartLabel").textContent = series.length
-    ? `${formatTime(series[0].time)} to ${formatTime(series[series.length - 1].time)}`
-    : "no candle data";
+    ? `${formatTime(series[0].time)} 至 ${formatTime(series[series.length - 1].time)}`
+    : "暂无 K 线数据";
 
   const width = 900;
   const height = 320;
@@ -105,7 +107,7 @@ function renderChart(series) {
   const chartH = height - pad.top - pad.bottom;
 
   if (!series.length) {
-    svg.append(text(width / 2, height / 2, "No candle data", "chart-label", "middle"));
+    svg.append(text(width / 2, height / 2, "暂无 K 线数据", "chart-label", "middle"));
     return;
   }
 
@@ -158,7 +160,7 @@ function renderCoverage(rows) {
   $("coverageRows").innerHTML = rows
     .map(
       (row) => `<tr>
-        <td>${escapeHTML(row.market_type)}</td>
+        <td>${escapeHTML(marketLabel(row.market_type))}</td>
         <td>${escapeHTML(row.symbol)}</td>
         <td>${escapeHTML(row.interval)}</td>
         <td class="numeric">${number(row.candles)}</td>
@@ -173,7 +175,7 @@ function renderBacktests(rows) {
     .map(
       (row) => `<tr>
         <td>${escapeHTML(row.strategy_name)}</td>
-        <td>${escapeHTML(row.market_type)}</td>
+        <td>${escapeHTML(marketLabel(row.market_type))}</td>
         <td>${escapeHTML(row.symbol)}</td>
         <td class="numeric ${tone(row.total_return_pct)}">${pct(row.total_return_pct)}</td>
         <td class="numeric ${tone(row.excess_return_pct)}">${pct(row.excess_return_pct)}</td>
@@ -189,9 +191,9 @@ function renderOrders(rows) {
       (row) => `<tr>
         <td>${formatTime(row.created_at)}</td>
         <td>${escapeHTML(row.symbol)}</td>
-        <td>${escapeHTML(row.side)}</td>
-        <td>${escapeHTML(row.status)}</td>
-        <td class="${row.risk_decision === "allow" ? "positive" : "negative"}">${escapeHTML(row.risk_decision)}</td>
+        <td>${escapeHTML(sideLabel(row.side))}</td>
+        <td>${escapeHTML(statusLabel(row.status))}</td>
+        <td class="${row.risk_decision === "allow" ? "positive" : "negative"}">${escapeHTML(decisionLabel(row.risk_decision))}</td>
       </tr>`,
     )
     .join("") || emptyRow(5);
@@ -202,43 +204,43 @@ function renderBalances(rows) {
     .map(
       (row) => `<div class="row-card">
         <div><strong>${escapeHTML(row.account_id)} / ${escapeHTML(row.asset)}</strong><span>${formatTime(row.snapshot_time)}</span></div>
-        <div class="numeric"><strong>${money(row.total)}</strong><span>free ${money(row.free)}</span></div>
+        <div class="numeric"><strong>${money(row.total)}</strong><span>可用 ${money(row.free)}</span></div>
       </div>`,
     )
-    .join("") || emptyBlock("No balances");
+    .join("") || emptyBlock("暂无余额");
 }
 
 function renderPositions(rows) {
   $("positionRows").innerHTML = rows
     .map(
       (row) => `<div class="row-card">
-        <div><strong>${escapeHTML(row.symbol)} ${escapeHTML(row.position_side)}</strong><span>${escapeHTML(row.market_type)} ${formatTime(row.snapshot_time)}</span></div>
-        <div class="numeric"><strong>${money(row.notional)}</strong><span>liq distance ${pct(row.liquidation_distance_pct)}</span></div>
+        <div><strong>${escapeHTML(row.symbol)} ${escapeHTML(positionSideLabel(row.position_side))}</strong><span>${escapeHTML(marketLabel(row.market_type))} ${formatTime(row.snapshot_time)}</span></div>
+        <div class="numeric"><strong>${money(row.notional)}</strong><span>强平距离 ${pct(row.liquidation_distance_pct)}</span></div>
       </div>`,
     )
-    .join("") || emptyBlock("No positions");
+    .join("") || emptyBlock("暂无持仓");
 }
 
 function renderSignals(rows) {
   $("signalRows").innerHTML = rows
     .map(
       (row) => `<div class="row-card">
-        <div><strong>${escapeHTML(row.strategy_id)} / ${escapeHTML(row.symbol)}</strong><span>${escapeHTML(row.reason || "signal")} ${formatTime(row.signal_time)}</span></div>
-        <div class="numeric"><strong>${escapeHTML(row.action)}</strong><span>${pct(row.confidence * 100)}</span></div>
+        <div><strong>${escapeHTML(row.strategy_id)} / ${escapeHTML(row.symbol)}</strong><span>${escapeHTML(row.reason || "信号")} ${formatTime(row.signal_time)}</span></div>
+        <div class="numeric"><strong>${escapeHTML(actionLabel(row.action))}</strong><span>${pct(row.confidence * 100)}</span></div>
       </div>`,
     )
-    .join("") || emptyBlock("No signals");
+    .join("") || emptyBlock("暂无信号");
 }
 
 function renderPerformance(rows) {
   $("performanceRows").innerHTML = rows
     .map(
       (row) => `<div class="row-card">
-        <div><strong>${escapeHTML(row.strategy_id)} run ${row.run_id}</strong><span>${formatTime(row.snapshot_time)}</span></div>
-        <div class="numeric"><strong>${money(row.equity)}</strong><span class="${tone(row.pnl)}">PnL ${money(row.pnl)}</span></div>
+        <div><strong>${escapeHTML(row.strategy_id)} 运行 ${row.run_id}</strong><span>${formatTime(row.snapshot_time)}</span></div>
+        <div class="numeric"><strong>${money(row.equity)}</strong><span class="${tone(row.pnl)}">盈亏 ${money(row.pnl)}</span></div>
       </div>`,
     )
-    .join("") || emptyBlock("No performance");
+    .join("") || emptyBlock("暂无绩效");
 }
 
 function renderSnapshots(rows) {
@@ -246,7 +248,7 @@ function renderSnapshots(rows) {
     .map(
       (row) => `<tr>
         <td>${escapeHTML(row.name)}</td>
-        <td>${escapeHTML(row.market_type)}</td>
+        <td>${escapeHTML(marketLabel(row.market_type))}</td>
         <td>${escapeHTML(row.symbol)}</td>
         <td class="numeric">${number(row.candle_count)} / ${number(row.expected_count)}</td>
         <td class="numeric ${row.gap_count > 0 ? "negative" : "positive"}">${number(row.gap_count)}</td>
@@ -263,7 +265,7 @@ function renderFunding(rows) {
         <div class="numeric"><strong class="${tone(row.funding_rate)}">${pct(row.funding_rate * 100)}</strong><span>${money(row.mark_price)}</span></div>
       </div>`,
     )
-    .join("") || emptyBlock("No funding rates");
+    .join("") || emptyBlock("暂无资金费率");
 }
 
 function renderMarks(rows) {
@@ -271,10 +273,10 @@ function renderMarks(rows) {
     .map(
       (row) => `<div class="row-card">
         <div><strong>${escapeHTML(row.symbol)}</strong><span>${formatTime(row.event_time)}</span></div>
-        <div class="numeric"><strong>${money(row.mark_price)}</strong><span>index ${money(row.index_price)}</span></div>
+        <div class="numeric"><strong>${money(row.mark_price)}</strong><span>指数 ${money(row.index_price)}</span></div>
       </div>`,
     )
-    .join("") || emptyBlock("No mark prices");
+    .join("") || emptyBlock("暂无标记价格");
 }
 
 function line(x1, y1, x2, y2, className) {
@@ -299,7 +301,7 @@ function text(x, y, value, className, anchor) {
 
 function renderError(error) {
   $("warnings").hidden = false;
-  $("warnings").textContent = `Dashboard load failed: ${error.message}`;
+  $("warnings").textContent = `看板加载失败：${error.message}`;
 }
 
 function money(value) {
@@ -350,7 +352,7 @@ function tone(value) {
 }
 
 function emptyRow(colspan) {
-  return `<tr><td colspan="${colspan}" class="empty">No data</td></tr>`;
+  return `<tr><td colspan="${colspan}" class="empty">暂无数据</td></tr>`;
 }
 
 function emptyBlock(label) {
@@ -364,4 +366,66 @@ function escapeHTML(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function marketLabel(value) {
+  const labels = {
+    spot: "现货",
+    perpetual: "永续合约",
+  };
+  return labels[value] || value || "--";
+}
+
+function decisionLabel(value) {
+  const labels = {
+    allow: "通过",
+    reject: "拒绝",
+    reduce: "降仓",
+    halt: "停机",
+  };
+  return labels[value] || value || "--";
+}
+
+function sideLabel(value) {
+  const labels = {
+    buy: "买入",
+    sell: "卖出",
+    short: "做空",
+    cover: "平空",
+  };
+  return labels[value] || value || "--";
+}
+
+function statusLabel(value) {
+  const labels = {
+    dry_run_accepted: "模拟通过",
+    risk_rejected: "风控拒绝",
+    planned: "已计划",
+    submitted: "已提交",
+    filled: "已成交",
+    canceled: "已撤单",
+    failed: "失败",
+  };
+  return labels[value] || value || "--";
+}
+
+function positionSideLabel(value) {
+  const labels = {
+    long: "多头",
+    short: "空头",
+    both: "双向",
+    net: "净仓位",
+  };
+  return labels[value] || value || "--";
+}
+
+function actionLabel(value) {
+  const labels = {
+    buy: "买入",
+    sell: "卖出",
+    short: "做空",
+    cover: "平空",
+    hold: "观望",
+  };
+  return labels[value] || value || "--";
 }

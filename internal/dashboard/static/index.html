@@ -3,32 +3,32 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Quant Dashboard</title>
+    <title>量化交易看板</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
     <header class="topbar">
       <div>
-        <h1>Quant Dashboard</h1>
-        <p id="subtitle">SQLite research workspace</p>
+        <h1>量化交易看板</h1>
+        <p id="subtitle">SQLite 本地研究工作台</p>
       </div>
       <div class="status-strip">
-        <span id="runtimeBadge" class="badge badge-neutral">runtime</span>
+        <span id="runtimeBadge" class="badge badge-neutral">运行状态</span>
         <span id="generatedAt" class="muted">--</span>
       </div>
     </header>
 
     <main class="shell">
-      <section class="toolbar" aria-label="filters">
+      <section class="toolbar" aria-label="筛选条件">
         <label>
-          Market
+          市场
           <select id="market">
-            <option value="spot">spot</option>
-            <option value="perpetual">perpetual</option>
+            <option value="spot">现货</option>
+            <option value="perpetual">永续合约</option>
           </select>
         </label>
         <label>
-          Symbol
+          交易对
           <select id="symbol">
             <option>BTCUSDT</option>
             <option>ETHUSDT</option>
@@ -37,7 +37,7 @@
           </select>
         </label>
         <label>
-          Interval
+          周期
           <select id="interval">
             <option>1h</option>
             <option>15m</option>
@@ -45,29 +45,29 @@
             <option>1d</option>
           </select>
         </label>
-        <button id="refresh" type="button">Refresh</button>
+        <button id="refresh" type="button">刷新</button>
       </section>
 
       <section id="warnings" class="warnings" hidden></section>
 
-      <section class="kpi-grid" aria-label="key metrics">
+      <section class="kpi-grid" aria-label="核心指标">
         <article class="metric">
-          <span>Latest close</span>
+          <span>最新收盘价</span>
           <strong id="latestClose">--</strong>
           <small id="latestMeta">--</small>
         </article>
         <article class="metric">
-          <span>Backtest runs</span>
+          <span>回测次数</span>
           <strong id="runCount">--</strong>
           <small id="bestBacktest">--</small>
         </article>
         <article class="metric">
-          <span>Risk events</span>
+          <span>风控事件</span>
           <strong id="riskCount">--</strong>
           <small id="lastRisk">--</small>
         </article>
         <article class="metric">
-          <span>Paper equity</span>
+          <span>模拟权益</span>
           <strong id="paperEquity">--</strong>
           <small id="paperPnL">--</small>
         </article>
@@ -77,27 +77,27 @@
         <article class="panel chart-panel">
           <div class="panel-head">
             <div>
-              <h2>Price</h2>
+              <h2>价格走势</h2>
               <p id="chartLabel">--</p>
             </div>
-            <span id="seriesCount" class="pill">0 points</span>
+            <span id="seriesCount" class="pill">0 个点</span>
           </div>
-          <svg id="priceChart" class="chart" viewBox="0 0 900 320" role="img" aria-label="price chart"></svg>
+          <svg id="priceChart" class="chart" viewBox="0 0 900 320" role="img" aria-label="价格走势图"></svg>
         </article>
 
         <article class="panel">
           <div class="panel-head">
-            <h2>Data Coverage</h2>
+            <h2>数据覆盖</h2>
           </div>
           <div class="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Market</th>
-                  <th>Symbol</th>
-                  <th>Interval</th>
-                  <th>Candles</th>
-                  <th>Last Close</th>
+                  <th>市场</th>
+                  <th>交易对</th>
+                  <th>周期</th>
+                  <th>K 线数</th>
+                  <th>最新收盘价</th>
                 </tr>
               </thead>
               <tbody id="coverageRows"></tbody>
@@ -109,18 +109,18 @@
       <section class="grid-two">
         <article class="panel">
           <div class="panel-head">
-            <h2>Backtests</h2>
+            <h2>回测结果</h2>
           </div>
           <div class="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Strategy</th>
-                  <th>Market</th>
-                  <th>Symbol</th>
-                  <th>Total</th>
-                  <th>Excess</th>
-                  <th>Drawdown</th>
+                  <th>策略</th>
+                  <th>市场</th>
+                  <th>交易对</th>
+                  <th>总收益</th>
+                  <th>超额收益</th>
+                  <th>回撤</th>
                 </tr>
               </thead>
               <tbody id="backtestRows"></tbody>
@@ -130,17 +130,17 @@
 
         <article class="panel">
           <div class="panel-head">
-            <h2>Orders & Risk</h2>
+            <h2>订单与风控</h2>
           </div>
           <div class="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Time</th>
-                  <th>Symbol</th>
-                  <th>Side</th>
-                  <th>Status</th>
-                  <th>Risk</th>
+                  <th>时间</th>
+                  <th>交易对</th>
+                  <th>方向</th>
+                  <th>状态</th>
+                  <th>风控</th>
                 </tr>
               </thead>
               <tbody id="orderRows"></tbody>
@@ -152,15 +152,15 @@
       <section class="grid-two">
         <article class="panel">
           <div class="panel-head">
-            <h2>Account</h2>
+            <h2>账户</h2>
           </div>
           <div class="stack">
             <div class="subtable">
-              <h3>Balances</h3>
+              <h3>余额</h3>
               <div id="balanceRows" class="rows"></div>
             </div>
             <div class="subtable">
-              <h3>Positions</h3>
+              <h3>持仓</h3>
               <div id="positionRows" class="rows"></div>
             </div>
           </div>
@@ -168,15 +168,15 @@
 
         <article class="panel">
           <div class="panel-head">
-            <h2>Strategy Runtime</h2>
+            <h2>策略运行</h2>
           </div>
           <div class="stack">
             <div class="subtable">
-              <h3>Signals</h3>
+              <h3>信号</h3>
               <div id="signalRows" class="rows"></div>
             </div>
             <div class="subtable">
-              <h3>Performance</h3>
+              <h3>绩效</h3>
               <div id="performanceRows" class="rows"></div>
             </div>
           </div>
@@ -186,17 +186,17 @@
       <section class="grid-two">
         <article class="panel">
           <div class="panel-head">
-            <h2>Snapshots</h2>
+            <h2>数据快照</h2>
           </div>
           <div class="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Name</th>
-                  <th>Market</th>
-                  <th>Symbol</th>
-                  <th>Count</th>
-                  <th>Gaps</th>
+                  <th>名称</th>
+                  <th>市场</th>
+                  <th>交易对</th>
+                  <th>数量</th>
+                  <th>缺口</th>
                 </tr>
               </thead>
               <tbody id="snapshotRows"></tbody>
@@ -206,15 +206,15 @@
 
         <article class="panel">
           <div class="panel-head">
-            <h2>Derivatives</h2>
+            <h2>合约数据</h2>
           </div>
           <div class="stack">
             <div class="subtable">
-              <h3>Funding</h3>
+              <h3>资金费率</h3>
               <div id="fundingRows" class="rows"></div>
             </div>
             <div class="subtable">
-              <h3>Mark Price</h3>
+              <h3>标记价格</h3>
               <div id="markRows" class="rows"></div>
             </div>
           </div>
