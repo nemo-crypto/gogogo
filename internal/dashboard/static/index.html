@@ -50,101 +50,63 @@
 
       <section id="warnings" class="warnings" hidden></section>
 
-      <section class="kpi-grid" aria-label="核心指标">
+      <section class="kpi-grid" aria-label="交易概览">
         <article class="metric">
-          <span>最新收盘价</span>
-          <strong id="latestClose">--</strong>
-          <small id="latestMeta">--</small>
+          <span>账户权益</span>
+          <strong id="accountEquity">--</strong>
+          <small id="accountMeta">--</small>
         </article>
         <article class="metric">
-          <span>回测次数</span>
-          <strong id="runCount">--</strong>
-          <small id="bestBacktest">--</small>
+          <span>持仓盈亏</span>
+          <strong id="positionPnL">--</strong>
+          <small id="positionPnLMeta">--</small>
         </article>
         <article class="metric">
-          <span>风控事件</span>
-          <strong id="riskCount">--</strong>
-          <small id="lastRisk">--</small>
+          <span>当前持仓</span>
+          <strong id="openPositionCount">--</strong>
+          <small id="positionSummary">--</small>
         </article>
         <article class="metric">
-          <span>模拟权益</span>
-          <strong id="paperEquity">--</strong>
-          <small id="paperPnL">--</small>
+          <span>最近回测</span>
+          <strong id="latestBacktestReturn">--</strong>
+          <small id="latestBacktestMeta">--</small>
         </article>
       </section>
 
-      <section class="strategy-panel" aria-label="策略逻辑">
+      <section class="grid-main">
         <article class="panel">
           <div class="panel-head">
-            <div>
-              <h2>策略逻辑</h2>
-              <p id="strategySubtitle">当前运行策略说明</p>
-            </div>
-            <span id="strategyMode" class="pill">趋势跟随</span>
+            <h2>当前持仓</h2>
+            <span id="positionUpdatedAt" class="pill">--</span>
           </div>
-          <div class="strategy-body">
-            <div class="strategy-summary">
-              <span>当前策略</span>
+          <div id="positionRows" class="position-list"></div>
+        </article>
+
+        <aside class="side-stack">
+          <article class="panel">
+            <div class="panel-head">
+              <h2>买了啥 / 最新动作</h2>
+            </div>
+            <div id="tradeActionRows" class="rows action-list"></div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-head">
+              <h2>策略逻辑</h2>
+            </div>
+            <div class="strategy-compact">
               <strong id="strategyName">--</strong>
               <p id="strategyPlainText">--</p>
+              <div class="strategy-mini-grid">
+                <span><em>买入</em><strong id="buyRule">--</strong></span>
+                <span><em>卖出</em><strong id="sellRule">--</strong></span>
+                <span><em>信号</em><strong id="currentSignal">--</strong></span>
+                <span><em>限制</em><strong id="strategyLimit">--</strong></span>
+              </div>
+              <p id="signalReason">--</p>
             </div>
-            <div class="rule-grid">
-              <div class="rule-card">
-                <span>买入条件</span>
-                <strong id="buyRule">--</strong>
-                <p>短期均线站上长期均线，代表近期价格强于长期趋势。</p>
-              </div>
-              <div class="rule-card">
-                <span>卖出条件</span>
-                <strong id="sellRule">--</strong>
-                <p>短期均线跌破长期均线，代表趋势走弱，策略退出仓位。</p>
-              </div>
-              <div class="rule-card">
-                <span>当前信号</span>
-                <strong id="currentSignal">--</strong>
-                <p id="signalReason">--</p>
-              </div>
-              <div class="rule-card">
-                <span>主要限制</span>
-                <strong id="strategyLimit">只做多，不做空</strong>
-                <p>回测按下一根 K 线价格成交，并扣除手续费；结果不代表实盘收益。</p>
-              </div>
-            </div>
-          </div>
-        </article>
-      </section>
-
-      <section class="layout">
-        <article class="panel chart-panel">
-          <div class="panel-head">
-            <div>
-              <h2>价格走势</h2>
-              <p id="chartLabel">--</p>
-            </div>
-            <span id="seriesCount" class="pill">0 个点</span>
-          </div>
-          <svg id="priceChart" class="chart" viewBox="0 0 900 320" role="img" aria-label="价格走势图"></svg>
-        </article>
-
-        <article class="panel">
-          <div class="panel-head">
-            <h2>数据覆盖</h2>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>市场</th>
-                  <th>交易对</th>
-                  <th>周期</th>
-                  <th>K 线数</th>
-                  <th>最新收盘价</th>
-                </tr>
-              </thead>
-              <tbody id="coverageRows"></tbody>
-            </table>
-          </div>
-        </article>
+          </article>
+        </aside>
       </section>
 
       <section class="grid-two">
@@ -156,12 +118,15 @@
             <table>
               <thead>
                 <tr>
+                  <th>Run ID</th>
                   <th>策略</th>
                   <th>市场</th>
                   <th>交易对</th>
                   <th>总收益</th>
+                  <th>买入持有</th>
                   <th>超额收益</th>
                   <th>回撤</th>
+                  <th>交易数</th>
                 </tr>
               </thead>
               <tbody id="backtestRows"></tbody>
@@ -188,100 +153,6 @@
               </thead>
               <tbody id="backtestLogRows"></tbody>
             </table>
-          </div>
-        </article>
-      </section>
-
-      <section class="grid-two">
-        <article class="panel">
-          <div class="panel-head">
-            <h2>订单与风控</h2>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>时间</th>
-                  <th>交易对</th>
-                  <th>方向</th>
-                  <th>状态</th>
-                  <th>风控</th>
-                </tr>
-              </thead>
-              <tbody id="orderRows"></tbody>
-            </table>
-          </div>
-        </article>
-      </section>
-
-      <section class="grid-two">
-        <article class="panel">
-          <div class="panel-head">
-            <h2>账户</h2>
-          </div>
-          <div class="stack">
-            <div class="subtable">
-              <h3>余额</h3>
-              <div id="balanceRows" class="rows"></div>
-            </div>
-            <div class="subtable">
-              <h3>持仓</h3>
-              <div id="positionRows" class="rows"></div>
-            </div>
-          </div>
-        </article>
-
-        <article class="panel">
-          <div class="panel-head">
-            <h2>策略运行</h2>
-          </div>
-          <div class="stack">
-            <div class="subtable">
-              <h3>信号</h3>
-              <div id="signalRows" class="rows"></div>
-            </div>
-            <div class="subtable">
-              <h3>绩效</h3>
-              <div id="performanceRows" class="rows"></div>
-            </div>
-          </div>
-        </article>
-      </section>
-
-      <section class="grid-two">
-        <article class="panel">
-          <div class="panel-head">
-            <h2>数据快照</h2>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>名称</th>
-                  <th>市场</th>
-                  <th>交易对</th>
-                  <th>数量</th>
-                  <th>缺口</th>
-                </tr>
-              </thead>
-              <tbody id="snapshotRows"></tbody>
-            </table>
-          </div>
-        </article>
-
-        <article class="panel">
-          <div class="panel-head">
-            <h2>合约数据</h2>
-          </div>
-          <div class="stack">
-            <div class="subtable">
-              <h3>资金费率</h3>
-              <div id="fundingRows" class="rows"></div>
-            </div>
-            <div class="subtable">
-              <h3>标记价格</h3>
-              <div id="markRows" class="rows"></div>
-            </div>
           </div>
         </article>
       </section>

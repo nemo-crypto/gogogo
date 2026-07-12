@@ -64,7 +64,7 @@ function startAutoRefresh() {
 }
 
 function render(data) {
-  $("subtitle").textContent = `${marketLabel(data.query.market_type)} ${data.query.symbol} ${data.query.interval}`;
+  $("subtitle").textContent = "持仓 / 盈亏 / 回测";
   $("generatedAt").textContent = `更新于 ${formatTime(data.generated_at)}`;
   $("runtimeBadge").textContent = data.runtime.halted ? "已停机" : "运行中";
   $("runtimeBadge").className = data.runtime.halted ? "badge badge-danger" : "badge badge-ok";
@@ -72,18 +72,10 @@ function render(data) {
   renderWarnings(data.warnings || []);
   renderMetrics(data);
   renderStrategyOverview(data);
-  renderChart(data.price_series || []);
-  renderCoverage(data.market_coverage || []);
   renderBacktests(data.backtests || []);
   renderBacktestLogs(data.backtests || []);
-  renderOrders(data.orders || []);
-  renderBalances(data.balances || []);
+  renderTradeActions(data);
   renderPositions(data.positions || []);
-  renderSignals(data.signals || []);
-  renderPerformance(data.performance_snapshots || []);
-  renderSnapshots(data.candle_snapshots || []);
-  renderFunding(data.funding_rates || []);
-  renderMarks(data.mark_prices || []);
 }
 
 function renderWarnings(warnings) {
@@ -98,26 +90,32 @@ function renderWarnings(warnings) {
 }
 
 function renderMetrics(data) {
-  const series = data.price_series || [];
-  const latest = series[series.length - 1];
-  $("latestClose").textContent = latest ? money(latest.close) : "--";
-  $("latestMeta").textContent = latest ? formatTime(latest.time) : "暂无 K 线";
-
+  const balances = data.balances || [];
+  const latestBalance = balances[0];
+  const positions = data.positions || [];
+  const positionPnl = positions.reduce((total, row) => total + positionPnL(row).value, 0);
+  const activePositions = positions.filter((row) => Number(row.quantity || 0) !== 0);
+  const positionSymbols = activePositions.map((row) => row.symbol).slice(0, 3).join(", ");
   const backtests = data.backtests || [];
-  const best = [...backtests].sort((a, b) => b.excess_return_pct - a.excess_return_pct)[0];
-  $("runCount").textContent = number(data.counts.backtest_runs || 0);
-  $("bestBacktest").textContent = best ? `${best.symbol} 超额 ${pct(best.excess_return_pct)}` : "暂无回测";
+  const latestBacktest = backtests[0];
 
-  const risks = data.risk_events || [];
-  $("riskCount").textContent = number(data.counts.risk_events || 0);
-  $("lastRisk").textContent = risks.length ? `${risks[0].symbol} ${decisionLabel(risks[0].decision)}` : "暂无风控事件";
+  $("accountEquity").textContent = latestBalance ? money(latestBalance.total || latestBalance.usd_value) : "--";
+  $("accountMeta").textContent = latestBalance
+    ? `${latestBalance.account_id} / ${latestBalance.asset} / 可用 ${money(latestBalance.free)}`
+    : "暂无余额快照";
 
-  const performance = data.performance_snapshots || [];
-  const latestPerf = performance[0];
-  $("paperEquity").textContent = latestPerf ? money(latestPerf.equity) : "--";
-  $("paperPnL").textContent = latestPerf
-    ? `盈亏 ${money(latestPerf.pnl)} / 回撤 ${pct(latestPerf.drawdown_pct)}`
-    : "暂无模拟运行";
+  $("positionPnL").textContent = signedMoney(positionPnl);
+  $("positionPnL").className = tone(positionPnl);
+  $("positionPnLMeta").textContent = activePositions.length ? `${activePositions.length} 个持仓合计` : "暂无持仓";
+
+  $("openPositionCount").textContent = number(activePositions.length);
+  $("positionSummary").textContent = positionSymbols || "暂无持仓";
+
+  $("latestBacktestReturn").textContent = latestBacktest ? pct(latestBacktest.total_return_pct) : "--";
+  $("latestBacktestReturn").className = latestBacktest ? tone(latestBacktest.total_return_pct) : "";
+  $("latestBacktestMeta").textContent = latestBacktest
+    ? `Run ${latestBacktest.id} / ${strategyDisplayName(latestBacktest)}`
+    : "暂无回测";
 }
 
 function renderStrategyOverview(data) {
@@ -137,7 +135,6 @@ function renderStrategyOverview(data) {
 
   if (!latestBacktest) {
     $("strategyName").textContent = "暂无策略回测";
-    $("strategySubtitle").textContent = "先运行 backtest 或 papertrade 后会显示策略说明";
     $("strategyPlainText").textContent = "当前数据库里还没有可展示的策略参数。";
     $("buyRule").textContent = "--";
     $("sellRule").textContent = "--";
@@ -150,7 +147,6 @@ function renderStrategyOverview(data) {
   const slow = latestBacktest.slow_window || parseStrategyWindow(latestBacktest.strategy_name, 1);
   const strategyName = strategyDisplayName(latestBacktest);
   $("strategyName").textContent = strategyName;
-  $("strategySubtitle").textContent = `${marketLabel(data.query.market_type)} ${data.query.symbol} ${data.query.interval}`;
   if (isAdaptiveTrend(latestBacktest)) {
     $("strategyPlainText").textContent =
       `这是一个多币种趋势轮动策略：用 ${fast} 根 K 线看动量，用 ${slow} 根 K 线判断大趋势，并按波动率控制仓位。`;
@@ -254,15 +250,18 @@ function renderBacktests(rows) {
   $("backtestRows").innerHTML = rows
     .map(
       (row) => `<tr>
+        <td class="numeric">${number(row.id)}</td>
         <td>${escapeHTML(strategyDisplayName(row))}</td>
         <td>${escapeHTML(marketLabel(row.market_type))}</td>
         <td>${escapeHTML(row.symbol)}</td>
         <td class="numeric ${tone(row.total_return_pct)}">${pct(row.total_return_pct)}</td>
+        <td class="numeric ${tone(row.buy_hold_return_pct)}">${pct(row.buy_hold_return_pct)}</td>
         <td class="numeric ${tone(row.excess_return_pct)}">${pct(row.excess_return_pct)}</td>
         <td class="numeric negative">${pct(row.max_drawdown_pct)}</td>
+        <td class="numeric">${number(row.trade_count)}</td>
       </tr>`,
     )
-    .join("") || emptyRow(6);
+    .join("") || emptyRow(9);
 }
 
 function renderBacktestLogs(rows) {
@@ -279,6 +278,40 @@ function renderBacktestLogs(rows) {
       </tr>`,
     )
     .join("") || emptyRow(7);
+}
+
+function renderTradeActions(data) {
+  const orders = (data.orders || []).map((row) => ({
+    time: row.created_at,
+    title: `${row.symbol} ${sideLabel(row.side)}`,
+    meta: `${marketLabel(row.market_type)} / ${statusLabel(row.status)}`,
+    value: `${money(row.quantity)} @ ${money(row.price)}`,
+    tone: row.risk_decision === "allow" ? "positive" : "negative",
+  }));
+  const signals = (data.signals || []).map((row) => ({
+    time: row.signal_time,
+    title: `${row.symbol} ${actionLabel(row.action)}`,
+    meta: `${row.strategy_id} / 置信度 ${pct(row.confidence * 100)}`,
+    value: row.reason || "策略信号",
+    tone: row.action === "buy" || row.action === "cover" ? "positive" : row.action === "sell" || row.action === "short" ? "negative" : "",
+  }));
+  const actions = [...orders, ...signals]
+    .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
+    .slice(0, 8);
+
+  $("tradeActionRows").innerHTML = actions
+    .map(
+      (row) => `<div class="action-card">
+        <div>
+          <strong>${escapeHTML(row.title)}</strong>
+          <span>${escapeHTML(row.meta)} / ${formatTime(row.time)}</span>
+        </div>
+        <div class="numeric">
+          <strong class="${row.tone}">${escapeHTML(row.value)}</strong>
+        </div>
+      </div>`,
+    )
+    .join("") || emptyBlock("暂无买卖动作");
 }
 
 function renderOrders(rows) {
@@ -307,6 +340,7 @@ function renderBalances(rows) {
 }
 
 function renderPositions(rows) {
+  $("positionUpdatedAt").textContent = rows.length ? `更新 ${formatTime(rows[0].snapshot_time)}` : "暂无持仓";
   $("positionRows").innerHTML = rows
     .map((row) => {
       const pnl = positionPnL(row);
