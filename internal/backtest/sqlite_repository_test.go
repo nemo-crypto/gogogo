@@ -61,10 +61,11 @@ func TestSQLiteRepositorySaveRun(t *testing.T) {
 	}
 
 	records, err := repo.ListRuns(ctx, ListRunsQuery{
-		Symbol:   "BTCUSDT",
-		Interval: "1h",
-		SortBy:   "total",
-		Limit:    10,
+		MarketType: "spot",
+		Symbol:     "BTCUSDT",
+		Interval:   "1h",
+		SortBy:     "total",
+		Limit:      10,
 	})
 	if err != nil {
 		t.Fatalf("list runs: %v", err)

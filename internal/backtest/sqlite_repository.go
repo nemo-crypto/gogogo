@@ -112,10 +112,11 @@ type RunRecord struct {
 }
 
 type ListRunsQuery struct {
-	Symbol   string
-	Interval string
-	SortBy   string
-	Limit    int
+	MarketType string
+	Symbol     string
+	Interval   string
+	SortBy     string
+	Limit      int
 }
 
 func (r *SQLiteRepository) SaveRun(ctx context.Context, request SaveRunRequest) (int64, error) {
@@ -166,8 +167,16 @@ func (r *SQLiteRepository) ListRuns(ctx context.Context, query ListRunsQuery) ([
 
 	where := ""
 	args := make([]any, 0, 3)
+	if query.MarketType != "" {
+		where = "WHERE market_type = ?"
+		args = append(args, query.MarketType)
+	}
 	if query.Symbol != "" {
-		where = "WHERE symbol = ?"
+		if where == "" {
+			where = "WHERE symbol = ?"
+		} else {
+			where += " AND symbol = ?"
+		}
 		args = append(args, query.Symbol)
 	}
 	if query.Interval != "" {

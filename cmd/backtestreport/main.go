@@ -15,6 +15,7 @@ import (
 func main() {
 	var (
 		dsn      = flag.String("dsn", env("DATABASE_DSN", "/Users/guilinzhou/Desktop/test-nemo/gogogo/data.db"), "sqlite database path")
+		market   = flag.String("market", "", "optional market filter: spot or perpetual")
 		symbol   = flag.String("symbol", "", "optional symbol filter")
 		interval = flag.String("interval", "1h", "optional interval filter")
 		sortBy   = flag.String("sort", "excess", "sort: excess, total, drawdown, win-rate, trades")
@@ -36,10 +37,11 @@ func main() {
 
 	repo := backtest.NewSQLiteRepository(db)
 	records, err := repo.ListRuns(ctx, backtest.ListRunsQuery{
-		Symbol:   *symbol,
-		Interval: *interval,
-		SortBy:   *sortBy,
-		Limit:    *limit,
+		MarketType: *market,
+		Symbol:     *symbol,
+		Interval:   *interval,
+		SortBy:     *sortBy,
+		Limit:      *limit,
 	})
 	if err != nil {
 		log.Fatalf("list runs: %v", err)
