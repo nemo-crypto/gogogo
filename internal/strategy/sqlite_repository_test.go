@@ -31,7 +31,7 @@ func TestSQLiteRepositoryRecordsStrategyArtifacts(t *testing.T) {
 	if _, err := repo.SaveSignal(ctx, SignalRecord{
 		StrategyID: "sma",
 		RunID:      runID,
-		Exchange:   "binance",
+		Exchange:   "onebullex",
 		MarketType: "spot",
 		Symbol:     "btcusdt",
 		Action:     SignalBuy,

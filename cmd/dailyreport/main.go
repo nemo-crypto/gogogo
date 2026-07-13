@@ -5,8 +5,8 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
+	"gogogo/internal/config"
 	"log"
-	"os"
 	"time"
 
 	"gogogo/internal/marketdata"
@@ -72,9 +72,5 @@ func scalarCount(ctx context.Context, db *sql.DB, query string, arg any) (int64,
 }
 
 func env(key string, fallback string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		return fallback
-	}
-	return value
+	return config.Env(key, fallback)
 }

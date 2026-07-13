@@ -12,6 +12,10 @@ const (
 	OrderStatusDryRunAccepted OrderStatus = "dry_run_accepted"
 	OrderStatusRiskRejected   OrderStatus = "risk_rejected"
 	OrderStatusRiskHalted     OrderStatus = "risk_halted"
+	OrderStatusSubmitted      OrderStatus = "submitted"
+	OrderStatusFilled         OrderStatus = "filled"
+	OrderStatusCanceled       OrderStatus = "canceled"
+	OrderStatusFailed         OrderStatus = "failed"
 )
 
 type DryRunRequest struct {
@@ -33,6 +37,8 @@ type OrderRecord struct {
 	MarketType      risk.MarketType
 	Symbol          string
 	ClientOrderID   string
+	ExchangeOrderID string
+	ExchangeStatus  string
 	Side            risk.Side
 	OrderType       string
 	TimeInForce     string

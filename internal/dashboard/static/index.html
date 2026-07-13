@@ -10,7 +10,7 @@
     <header class="topbar">
       <div>
         <h1>量化交易看板</h1>
-        <p id="subtitle">SQLite 本地研究工作台</p>
+        <p id="subtitle">OneBullEx 永续合约 / 持仓 / 盈亏 / 回测入库</p>
       </div>
       <div class="status-strip">
         <span id="runtimeBadge" class="badge badge-neutral">运行状态</span>
@@ -21,9 +21,14 @@
     <main class="shell">
       <section class="toolbar" aria-label="筛选条件">
         <label>
+          交易所
+          <select id="exchange">
+            <option value="onebullex" selected>OneBullEx</option>
+          </select>
+        </label>
+        <label>
           市场
           <select id="market">
-            <option value="spot">现货</option>
             <option value="perpetual" selected>永续合约</option>
           </select>
         </label>
@@ -39,7 +44,9 @@
         <label>
           周期
           <select id="interval">
-            <option selected>1m</option>
+            <option selected>5m</option>
+            <option>3m</option>
+            <option>1m</option>
             <option>1h</option>
             <option>15m</option>
             <option>4h</option>
@@ -113,7 +120,7 @@
       <section class="grid-two">
         <article class="panel">
           <div class="panel-head">
-            <h2>回测结果</h2>
+            <h2>OneBullEx 回测结果</h2>
           </div>
           <div class="table-wrap">
             <table>

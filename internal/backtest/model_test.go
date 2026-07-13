@@ -18,7 +18,7 @@ func TestRunSMACrossover(t *testing.T) {
 	for i, price := range prices {
 		openTime := start.Add(time.Duration(i) * time.Hour)
 		candles = append(candles, marketdata.Candle{
-			Exchange:   "binance",
+			Exchange:   "onebullex",
 			MarketType: marketdata.MarketTypeSpot,
 			Symbol:     "BTCUSDT",
 			Interval:   "1h",
@@ -68,12 +68,14 @@ func TestRunScalpTPSL(t *testing.T) {
 	for i, price := range prices {
 		openTime := start.Add(time.Duration(i) * time.Minute)
 		candles = append(candles, marketdata.Candle{
-			Exchange:   "binance",
+			Exchange:   "onebullex",
 			MarketType: marketdata.MarketTypeSpot,
 			Symbol:     "BTCUSDT",
 			Interval:   "1m",
 			OpenTime:   openTime,
 			CloseTime:  openTime.Add(time.Minute),
+			High:       price,
+			Low:        price,
 			Close:      price,
 		})
 	}
@@ -94,6 +96,100 @@ func TestRunScalpTPSL(t *testing.T) {
 	}
 	if result.StrategyName != "scalp_tpsl_2_3_tp0.60_sl0.40" {
 		t.Fatalf("strategy name = %q", result.StrategyName)
+	}
+}
+
+func TestRunScalpTPSLUsesIntrabarStopLossConservatively(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	candles := testBacktestCandlesWithRanges(start,
+		[]float64{100, 100, 101, 102, 102},
+		[]float64{100, 100, 101, 103, 102},
+		[]float64{100, 100, 101, 99, 102},
+	)
+
+	result, err := RunScalpTPSL(candles, ScalpTPSLConfig{
+		FastWindow:    1,
+		SlowWindow:    2,
+		TakeProfitPct: 0.5,
+		StopLossPct:   0.5,
+	})
+	if err != nil {
+		t.Fatalf("run scalp tpsl: %v", err)
+	}
+	if len(result.Trades) == 0 {
+		t.Fatal("trades length = 0, want intrabar exit")
+	}
+	first := result.Trades[0]
+	if first.ExitPrice != 101.49 {
+		t.Fatalf("exit price = %f, want conservative stop loss 101.49", first.ExitPrice)
+	}
+	if first.ReturnPct >= 0 {
+		t.Fatalf("return pct = %f, want stop loss", first.ReturnPct)
+	}
+}
+
+func TestLatestScalpTPSLPercentsUsesATRAndClamps(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	candles := testBacktestCandlesWithRanges(start,
+		[]float64{100, 101, 102, 103, 104, 105},
+		[]float64{102, 103, 104, 105, 106, 107},
+		[]float64{98, 99, 100, 101, 102, 103},
+	)
+
+	takeProfitPct, stopLossPct, ok, err := LatestScalpTPSLPercents(candles, ScalpTPSLConfig{
+		FastWindow:        2,
+		SlowWindow:        3,
+		TakeProfitPct:     0.8,
+		StopLossPct:       0.45,
+		DynamicTPSL:       true,
+		TakeProfitATRMult: 1.6,
+		StopLossATRMult:   1.0,
+		ATRWindow:         3,
+		MinTakeProfitPct:  0.55,
+		MaxTakeProfitPct:  1.4,
+		MinStopLossPct:    0.3,
+		MaxStopLossPct:    0.75,
+	})
+	if err != nil {
+		t.Fatalf("latest tpsl percents: %v", err)
+	}
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	if takeProfitPct != 1.4 {
+		t.Fatalf("take profit pct = %f, want clamp 1.4", takeProfitPct)
+	}
+	if stopLossPct != 0.75 {
+		t.Fatalf("stop loss pct = %f, want clamp 0.75", stopLossPct)
+	}
+}
+
+func TestLatestScalpTPSLPercentsUsesCurrentFallbackDefaults(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	closes := make([]float64, 25)
+	for i := range closes {
+		closes[i] = 100 + float64(i)
+	}
+	candles := testBacktestCandles(start, closes, nil)
+
+	takeProfitPct, stopLossPct, ok, err := LatestScalpTPSLPercents(candles, ScalpTPSLConfig{})
+	if err != nil {
+		t.Fatalf("latest tpsl percents: %v", err)
+	}
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	if takeProfitPct != 0.80 {
+		t.Fatalf("take profit pct = %f, want 0.80", takeProfitPct)
+	}
+	if stopLossPct != 0.45 {
+		t.Fatalf("stop loss pct = %f, want 0.45", stopLossPct)
 	}
 }
 
@@ -247,7 +343,7 @@ func testBacktestCandles(start time.Time, closes []float64, volumes []float64) [
 			volume = volumes[i]
 		}
 		candles = append(candles, marketdata.Candle{
-			Exchange:   "binance",
+			Exchange:   "onebullex",
 			MarketType: marketdata.MarketTypePerpetual,
 			Symbol:     "BTCUSDT",
 			Interval:   "1m",
@@ -267,7 +363,7 @@ func testBacktestCandlesWithRanges(start time.Time, closes []float64, highs []fl
 	for i, closePrice := range closes {
 		openTime := start.Add(time.Duration(i) * time.Minute)
 		candles = append(candles, marketdata.Candle{
-			Exchange:   "binance",
+			Exchange:   "onebullex",
 			MarketType: marketdata.MarketTypePerpetual,
 			Symbol:     "BTCUSDT",
 			Interval:   "1m",

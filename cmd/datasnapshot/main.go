@@ -5,8 +5,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"gogogo/internal/config"
 	"log"
-	"os"
 	"strings"
 	"time"
 
@@ -22,9 +22,9 @@ func main() {
 func run() error {
 	var (
 		dsn       = flag.String("dsn", env("DATABASE_DSN", "/Users/guilinzhou/Desktop/test-nemo/gogogo/data.db"), "sqlite database path")
-		exchange  = flag.String("exchange", "binance", "exchange name")
-		market    = flag.String("market", "spot", "market type: spot or perpetual")
-		symbols   = flag.String("symbols", "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT", "comma-separated symbols")
+		exchange  = flag.String("exchange", env("EXCHANGE_NAME", "onebullex"), "exchange name")
+		market    = flag.String("market", "perpetual", "market type: perpetual")
+		symbols   = flag.String("symbols", "BTCUSDT", "comma-separated symbols")
 		interval  = flag.String("interval", "1h", "kline interval")
 		start     = flag.String("start", time.Now().UTC().Add(-30*24*time.Hour).Format(time.RFC3339), "start time in RFC3339")
 		end       = flag.String("end", time.Now().UTC().Format(time.RFC3339), "end time in RFC3339")
@@ -161,12 +161,10 @@ func printGaps(coverage marketdata.CandleCoverage, maxGaps int) {
 
 func parseMarketType(value string) (marketdata.MarketType, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "spot":
-		return marketdata.MarketTypeSpot, nil
 	case "perpetual", "futures", "future":
 		return marketdata.MarketTypePerpetual, nil
 	default:
-		return "", fmt.Errorf("unsupported market type %q", value)
+		return "", fmt.Errorf("unsupported market type %q: current strategy only supports perpetual", value)
 	}
 }
 
@@ -199,9 +197,5 @@ func defaultSnapshotName(exchange string, market string, interval string, start 
 }
 
 func env(key string, fallback string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		return fallback
-	}
-	return value
+	return config.Env(key, fallback)
 }

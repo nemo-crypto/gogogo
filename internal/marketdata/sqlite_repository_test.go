@@ -16,7 +16,7 @@ func TestSQLiteRepositoryUpsertAndListCandles(t *testing.T) {
 	openTime := time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)
 
 	candle := Candle{
-		Exchange:    "Binance",
+		Exchange:    "OneBullEx",
 		MarketType:  MarketTypePerpetual,
 		Symbol:      "btcusdt",
 		Interval:    "1h",
@@ -41,7 +41,7 @@ func TestSQLiteRepositoryUpsertAndListCandles(t *testing.T) {
 	}
 
 	candles, err := repo.ListCandles(ctx, CandleQuery{
-		Exchange:   "binance",
+		Exchange:   "onebullex",
 		MarketType: MarketTypePerpetual,
 		Symbol:     "BTCUSDT",
 		Interval:   "1h",
@@ -57,8 +57,8 @@ func TestSQLiteRepositoryUpsertAndListCandles(t *testing.T) {
 	if candles[0].Close != "60900.00" {
 		t.Fatalf("close = %q, want updated close", candles[0].Close)
 	}
-	if candles[0].Exchange != "binance" {
-		t.Fatalf("exchange = %q, want binance", candles[0].Exchange)
+	if candles[0].Exchange != "onebullex" {
+		t.Fatalf("exchange = %q, want onebullex", candles[0].Exchange)
 	}
 	if candles[0].Symbol != "BTCUSDT" {
 		t.Fatalf("symbol = %q, want BTCUSDT", candles[0].Symbol)
@@ -73,7 +73,7 @@ func TestSQLiteRepositoryFundingRatesAndMarkPrices(t *testing.T) {
 	eventTime := time.Date(2026, 7, 12, 8, 0, 0, 0, time.UTC)
 
 	if err := repo.UpsertFundingRate(ctx, FundingRate{
-		Exchange:    "binance",
+		Exchange:    "onebullex",
 		Symbol:      "BTCUSDT",
 		FundingTime: eventTime,
 		FundingRate: "0.0001",
@@ -84,7 +84,7 @@ func TestSQLiteRepositoryFundingRatesAndMarkPrices(t *testing.T) {
 	}
 
 	rates, err := repo.ListFundingRates(ctx, FundingRateQuery{
-		Exchange: "binance",
+		Exchange: "onebullex",
 		Symbol:   "BTCUSDT",
 		Start:    eventTime.Add(-time.Hour),
 		End:      eventTime.Add(time.Hour),
@@ -98,10 +98,27 @@ func TestSQLiteRepositoryFundingRatesAndMarkPrices(t *testing.T) {
 	if rates[0].FundingRate != "0.0001" {
 		t.Fatalf("funding rate = %q, want 0.0001", rates[0].FundingRate)
 	}
+	if err := repo.UpsertFundingRate(ctx, FundingRate{
+		Exchange:    "onebullex",
+		Symbol:      "BTCUSDT",
+		FundingTime: eventTime.Add(8 * time.Hour),
+		FundingRate: "0.0002",
+		MarkPrice:   "61200.00",
+		IndexPrice:  "61190.00",
+	}); err != nil {
+		t.Fatalf("upsert latest funding rate: %v", err)
+	}
+	latestRate, err := repo.LatestFundingRate(ctx, "onebullex", "btcusdt")
+	if err != nil {
+		t.Fatalf("latest funding rate: %v", err)
+	}
+	if latestRate.FundingRate != "0.0002" {
+		t.Fatalf("latest funding rate = %q, want 0.0002", latestRate.FundingRate)
+	}
 
 	nextFunding := eventTime.Add(8 * time.Hour)
 	if err := repo.UpsertMarkPrice(ctx, MarkPrice{
-		Exchange:             "binance",
+		Exchange:             "onebullex",
 		Symbol:               "btcusdt",
 		EventTime:            eventTime,
 		MarkPrice:            "61010.00",
@@ -112,7 +129,7 @@ func TestSQLiteRepositoryFundingRatesAndMarkPrices(t *testing.T) {
 		t.Fatalf("upsert mark price: %v", err)
 	}
 
-	latest, err := repo.LatestMarkPrice(ctx, "BINANCE", "BTCUSDT")
+	latest, err := repo.LatestMarkPrice(ctx, "onebullex", "BTCUSDT")
 	if err != nil {
 		t.Fatalf("latest mark price: %v", err)
 	}
@@ -130,7 +147,7 @@ func TestSQLiteRepositoryLatestMarkPriceNotFound(t *testing.T) {
 	ctx := context.Background()
 	repo := newTestRepository(t, ctx)
 
-	_, err := repo.LatestMarkPrice(ctx, "binance", "BTCUSDT")
+	_, err := repo.LatestMarkPrice(ctx, "onebullex", "BTCUSDT")
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
@@ -145,7 +162,7 @@ func TestSQLiteRepositoryCreateCandleSnapshot(t *testing.T) {
 
 	for i := 0; i < 2; i++ {
 		if err := repo.UpsertCandle(ctx, Candle{
-			Exchange:    "binance",
+			Exchange:    "onebullex",
 			MarketType:  MarketTypeSpot,
 			Symbol:      "BTCUSDT",
 			Interval:    "1h",
@@ -158,7 +175,7 @@ func TestSQLiteRepositoryCreateCandleSnapshot(t *testing.T) {
 			Volume:      "10.00",
 			QuoteVolume: "1050.00",
 			TradeCount:  100,
-			Source:      "binance",
+			Source:      "onebullex",
 		}); err != nil {
 			t.Fatalf("upsert candle %d: %v", i, err)
 		}
@@ -167,7 +184,7 @@ func TestSQLiteRepositoryCreateCandleSnapshot(t *testing.T) {
 	snapshot, coverage, err := repo.CreateCandleSnapshot(ctx, CandleSnapshotRequest{
 		Name: "unit-test",
 		Query: CandleQuery{
-			Exchange:   "binance",
+			Exchange:   "onebullex",
 			MarketType: MarketTypeSpot,
 			Symbol:     "BTCUSDT",
 			Interval:   "1h",

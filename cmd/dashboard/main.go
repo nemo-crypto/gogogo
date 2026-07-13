@@ -5,9 +5,9 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
-	"os"
 	"time"
 
+	"gogogo/internal/config"
 	"gogogo/internal/dashboard"
 	"gogogo/internal/sqliteutil"
 	"gogogo/internal/storage"
@@ -46,9 +46,5 @@ func main() {
 }
 
 func env(key string, fallback string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		return fallback
-	}
-	return value
+	return config.Env(key, fallback)
 }

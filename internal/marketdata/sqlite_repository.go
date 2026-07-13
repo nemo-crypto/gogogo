@@ -484,6 +484,34 @@ LIMIT ?;
 	return rates, nil
 }
 
+func (r *SQLiteRepository) LatestFundingRate(ctx context.Context, exchange string, symbol string) (FundingRate, error) {
+	exchange = normalizeExchange(exchange)
+	symbol = normalizeSymbol(symbol)
+	if exchange == "" {
+		return FundingRate{}, errors.New("exchange is required")
+	}
+	if symbol == "" {
+		return FundingRate{}, errors.New("symbol is required")
+	}
+
+	row := r.db.QueryRowContext(ctx, `
+SELECT exchange, symbol, funding_time, funding_rate, mark_price, index_price, created_at
+FROM funding_rates
+WHERE exchange = ? AND symbol = ?
+ORDER BY funding_time DESC
+LIMIT 1;
+`, exchange, symbol)
+
+	rate, err := scanFundingRate(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return FundingRate{}, ErrNotFound
+		}
+		return FundingRate{}, err
+	}
+	return rate, nil
+}
+
 func (r *SQLiteRepository) UpsertMarkPrice(ctx context.Context, price MarkPrice) error {
 	price, err := normalizeMarkPrice(price)
 	if err != nil {

@@ -2,9 +2,11 @@ package main
 
 import (
 	"math"
+	"strconv"
 	"testing"
 	"time"
 
+	"gogogo/internal/backtest"
 	"gogogo/internal/marketdata"
 	"gogogo/internal/portfolio"
 	"gogogo/internal/strategy"
@@ -17,7 +19,7 @@ func TestLatestScalpSignalAllowsPerpetualShort(t *testing.T) {
 	for i, price := range prices {
 		openTime := start.Add(time.Duration(i) * time.Minute)
 		candles = append(candles, marketdata.Candle{
-			Exchange:   "binance",
+			Exchange:   "onebullex",
 			MarketType: marketdata.MarketTypePerpetual,
 			Symbol:     "BTCUSDT",
 			Interval:   "1m",
@@ -221,13 +223,20 @@ func TestPaperRiskAccountSnapshotUsesCurrentState(t *testing.T) {
 
 func TestApplyPaperProfileAggressiveDefaultsAndOverrides(t *testing.T) {
 	strategyID := "sma-paper"
-	market := "spot"
+	market := "manual"
 	interval := "1h"
 	strategyType := "sma"
 	fast := 12
 	slow := 48
 	takeProfitPct := 0.8
 	stopLossPct := 0.4
+	dynamicTPSL := false
+	takeATRMult := 0.0
+	stopATRMult := 0.0
+	minTPPct := 0.0
+	maxTPPct := 0.0
+	minSLPct := 0.0
+	maxSLPct := 0.0
 	cooldownBars := 0
 	minSpreadPct := 0.0
 	confirmBars := 1
@@ -249,6 +258,8 @@ func TestApplyPaperProfileAggressiveDefaultsAndOverrides(t *testing.T) {
 	maxOrderRisk := 1.0
 	maxLeverage := 3.0
 	leverage := 1.0
+	signalFilter := false
+	minSignal := 0.0
 
 	err := applyPaperProfile("aggressive", map[string]struct{}{"leverage": {}}, paperProfileFlags{
 		strategyID:    &strategyID,
@@ -259,6 +270,13 @@ func TestApplyPaperProfileAggressiveDefaultsAndOverrides(t *testing.T) {
 		slow:          &slow,
 		takeProfitPct: &takeProfitPct,
 		stopLossPct:   &stopLossPct,
+		dynamicTPSL:   &dynamicTPSL,
+		takeATRMult:   &takeATRMult,
+		stopATRMult:   &stopATRMult,
+		minTPPct:      &minTPPct,
+		maxTPPct:      &maxTPPct,
+		minSLPct:      &minSLPct,
+		maxSLPct:      &maxSLPct,
 		cooldownBars:  &cooldownBars,
 		minSpreadPct:  &minSpreadPct,
 		confirmBars:   &confirmBars,
@@ -280,21 +298,29 @@ func TestApplyPaperProfileAggressiveDefaultsAndOverrides(t *testing.T) {
 		maxOrderRisk:  &maxOrderRisk,
 		maxLeverage:   &maxLeverage,
 		leverage:      &leverage,
+		signalFilter:  &signalFilter,
+		minSignal:     &minSignal,
 	})
 	if err != nil {
 		t.Fatalf("apply profile: %v", err)
 	}
-	if strategyID != "perp-trend-scalp-aggressive-paper" {
+	if strategyID != defaultPaperStrategyID {
 		t.Fatalf("strategy id = %q", strategyID)
 	}
-	if market != "perpetual" || interval != "1m" || strategyType != "scalp-tpsl" {
-		t.Fatalf("market=%q interval=%q strategy_type=%q, want aggressive perp 1m scalp", market, interval, strategyType)
+	if market != "perpetual" || interval != "3m" || strategyType != "scalp-tpsl" {
+		t.Fatalf("market=%q interval=%q strategy_type=%q, want aggressive perp 3m scalp", market, interval, strategyType)
 	}
-	if fast != 3 || slow != 12 {
-		t.Fatalf("windows = %d/%d, want 3/12", fast, slow)
+	if fast != 3 || slow != 9 {
+		t.Fatalf("windows = %d/%d, want 3/9", fast, slow)
 	}
-	if !closeEnough(takeProfitPct, 0.65) || !closeEnough(stopLossPct, 0.25) {
-		t.Fatalf("tp/sl = %f/%f, want 0.65/0.25", takeProfitPct, stopLossPct)
+	if !closeEnough(takeProfitPct, 0.80) || !closeEnough(stopLossPct, 0.45) {
+		t.Fatalf("tp/sl = %f/%f, want 0.80/0.45", takeProfitPct, stopLossPct)
+	}
+	if !dynamicTPSL || !closeEnough(takeATRMult, 1.8) || !closeEnough(stopATRMult, 1.0) {
+		t.Fatalf("dynamic tpsl = %v multipliers=%f/%f, want true 1.8/1.0", dynamicTPSL, takeATRMult, stopATRMult)
+	}
+	if !closeEnough(minTPPct, 0.60) || !closeEnough(maxTPPct, 1.60) || !closeEnough(minSLPct, 0.30) || !closeEnough(maxSLPct, 0.75) {
+		t.Fatalf("dynamic tpsl bounds tp=%f/%f sl=%f/%f", minTPPct, maxTPPct, minSLPct, maxSLPct)
 	}
 	if !closeEnough(riskPct, 2) || !closeEnough(maxNotional, 220) {
 		t.Fatalf("risk/notional = %f/%f, want 2/220", riskPct, maxNotional)
@@ -305,6 +331,170 @@ func TestApplyPaperProfileAggressiveDefaultsAndOverrides(t *testing.T) {
 	if !closeEnough(leverage, 1) {
 		t.Fatalf("leverage = %f, want manual override 1", leverage)
 	}
+	if !signalFilter || !closeEnough(minSignal, 0.50) {
+		t.Fatalf("signal filter = %v min=%f, want true 0.50", signalFilter, minSignal)
+	}
+}
+
+func TestAlignPaperOrderPlanRoundsConservatively(t *testing.T) {
+	plan, err := alignPaperOrderPlan("short", 100.04, 100.26, 99.87, 0.0019, paperRunConfig{
+		MinOrderQuantity: 0.001,
+		QuantityStep:     0.001,
+		PriceTickSize:    0.1,
+	})
+	if err != nil {
+		t.Fatalf("align order plan: %v", err)
+	}
+	if !closeEnough(plan.EntryPrice, 100.0) {
+		t.Fatalf("entry = %f, want 100.0", plan.EntryPrice)
+	}
+	if !closeEnough(plan.StopPrice, 100.3) {
+		t.Fatalf("stop = %f, want 100.3", plan.StopPrice)
+	}
+	if !closeEnough(plan.TakeProfitPrice, 99.9) {
+		t.Fatalf("take profit = %f, want 99.9", plan.TakeProfitPrice)
+	}
+	if !closeEnough(plan.Quantity, 0.001) {
+		t.Fatalf("quantity = %f, want 0.001", plan.Quantity)
+	}
+}
+
+func TestValidatePaperMarketFreshness(t *testing.T) {
+	now := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	err := validatePaperMarketFreshness(paperMarketSnapshot{
+		PriceSource:     "latest_mark_price",
+		PriceTime:       now.Add(-30 * time.Second),
+		CandleCloseTime: now.Add(-45 * time.Second),
+	}, now, paperRunConfig{MaxCandleAge: time.Minute, MaxMarkPriceAge: time.Minute})
+	if err != nil {
+		t.Fatalf("freshness: %v", err)
+	}
+	err = validatePaperMarketFreshness(paperMarketSnapshot{
+		PriceSource:     "latest_mark_price",
+		PriceTime:       now.Add(-3 * time.Minute),
+		CandleCloseTime: now.Add(-30 * time.Second),
+	}, now, paperRunConfig{MaxCandleAge: time.Minute, MaxMarkPriceAge: time.Minute})
+	if err == nil {
+		t.Fatal("freshness error = nil, want stale mark price")
+	}
+}
+
+func TestPaperEffectiveTPSLUsesDynamicATR(t *testing.T) {
+	start := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	candles := make([]marketdata.Candle, 0, 6)
+	for i, price := range []float64{100, 101, 102, 103, 104, 105} {
+		openTime := start.Add(time.Duration(i) * time.Minute)
+		candles = append(candles, marketdata.Candle{
+			Exchange:   "onebullex",
+			MarketType: marketdata.MarketTypePerpetual,
+			Symbol:     "BTCUSDT",
+			Interval:   "5m",
+			OpenTime:   openTime,
+			CloseTime:  openTime.Add(5 * time.Minute),
+			High:       formatTestFloat(price + 2),
+			Low:        formatTestFloat(price - 2),
+			Close:      formatTestFloat(price),
+			Volume:     "100",
+		})
+	}
+
+	got, err := paperEffectiveTPSL(candles, paperRunConfig{
+		MarketType:        "perpetual",
+		FastWindow:        2,
+		SlowWindow:        3,
+		TakeProfitPct:     0.8,
+		StopLossPct:       0.45,
+		DynamicTPSL:       true,
+		TakeProfitATRMult: 1.6,
+		StopLossATRMult:   1,
+		ATRWindow:         3,
+		MinTakeProfitPct:  0.55,
+		MaxTakeProfitPct:  1.4,
+		MinStopLossPct:    0.3,
+		MaxStopLossPct:    0.75,
+	})
+	if err != nil {
+		t.Fatalf("effective tpsl: %v", err)
+	}
+	if got.Source != "atr_dynamic" || !closeEnough(got.TakeProfitPct, 1.4) || !closeEnough(got.StopLossPct, 0.75) {
+		t.Fatalf("effective tpsl = %+v, want atr_dynamic 1.4/0.75", got)
+	}
+}
+
+func TestAssessPaperSignalAllowsHighQualityEntry(t *testing.T) {
+	start := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	candles := testFeatureCandles(start,
+		[]float64{100, 100.2, 100.4, 100.8, 101.2, 101.7, 102.2, 102.8, 103.4, 104.1, 104.9},
+		[]float64{100, 110, 105, 120, 115, 130, 125, 140, 135, 145, 210},
+	)
+	assessment := assessPaperSignal(candles, backtestResult(2, 56, 12), paperSignal{
+		Action:       strategy.SignalBuy,
+		PositionSide: "long",
+	}, paperMarketSnapshot{
+		MarkPrice:            104.9,
+		LatestFundingRatePct: 0.01,
+	}, paperRunConfig{
+		FastWindow:           3,
+		SlowWindow:           9,
+		ATRWindow:            3,
+		MinATRPct:            0.05,
+		MaxATRPct:            2,
+		VolumeWindow:         3,
+		MinVolumeRatio:       1.10,
+		MaxEntryExtensionPct: 0.5,
+		MaxAbsFundingRatePct: 0.05,
+		SignalFilterEnabled:  true,
+		MinSignalScore:       0.55,
+	})
+	if !assessment.AllowEntry {
+		t.Fatalf("allow entry = false, reason=%s score=%f features=%v", assessment.Reason, assessment.Score, assessment.Features)
+	}
+	if assessment.Score < 0.55 {
+		t.Fatalf("score = %f, want >= 0.55", assessment.Score)
+	}
+}
+
+func TestAssessPaperSignalBlocksBelowThreshold(t *testing.T) {
+	start := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	candles := testFeatureCandles(start,
+		[]float64{100, 100.2, 100.4, 100.8, 101.2, 101.7, 102.2, 102.8, 103.4, 104.1, 104.9},
+		[]float64{100, 105, 100, 105, 100, 105, 100, 105, 100, 105, 90},
+	)
+	assessment := assessPaperSignal(candles, backtestResult(-8, 35, 12), paperSignal{
+		Action:       strategy.SignalBuy,
+		PositionSide: "long",
+	}, paperMarketSnapshot{
+		MarkPrice:            105.5,
+		LatestFundingRatePct: 0.08,
+	}, paperRunConfig{
+		FastWindow:           3,
+		SlowWindow:           9,
+		ATRWindow:            3,
+		MinATRPct:            0.05,
+		MaxATRPct:            2,
+		VolumeWindow:         3,
+		MinVolumeRatio:       1.10,
+		MaxEntryExtensionPct: 0.05,
+		MaxAbsFundingRatePct: 0.05,
+		SignalFilterEnabled:  true,
+		MinSignalScore:       0.90,
+	})
+	if assessment.AllowEntry {
+		t.Fatalf("allow entry = true, want blocked; score=%f features=%v", assessment.Score, assessment.Features)
+	}
+	if assessment.Reason != "score_below_min" {
+		t.Fatalf("reason = %q, want score_below_min", assessment.Reason)
+	}
+}
+
+func TestParseFundingRatePct(t *testing.T) {
+	got, err := parseFundingRatePct("0.0001")
+	if err != nil {
+		t.Fatalf("parse funding rate: %v", err)
+	}
+	if !closeEnough(got, 0.01) {
+		t.Fatalf("funding pct = %f, want 0.01", got)
+	}
 }
 
 func testCandles(start time.Time, prices []string) []marketdata.Candle {
@@ -312,7 +502,7 @@ func testCandles(start time.Time, prices []string) []marketdata.Candle {
 	for i, price := range prices {
 		openTime := start.Add(time.Duration(i) * time.Minute)
 		candles = append(candles, marketdata.Candle{
-			Exchange:   "binance",
+			Exchange:   "onebullex",
 			MarketType: marketdata.MarketTypePerpetual,
 			Symbol:     "BTCUSDT",
 			Interval:   "1m",
@@ -324,6 +514,38 @@ func testCandles(start time.Time, prices []string) []marketdata.Candle {
 	return candles
 }
 
+func testFeatureCandles(start time.Time, closes []float64, volumes []float64) []marketdata.Candle {
+	candles := make([]marketdata.Candle, 0, len(closes))
+	for i, closePrice := range closes {
+		openTime := start.Add(time.Duration(i) * time.Minute)
+		candles = append(candles, marketdata.Candle{
+			Exchange:   "onebullex",
+			MarketType: marketdata.MarketTypePerpetual,
+			Symbol:     "BTCUSDT",
+			Interval:   "5m",
+			OpenTime:   openTime,
+			CloseTime:  openTime.Add(5 * time.Minute),
+			High:       formatTestFloat(closePrice + 0.5),
+			Low:        formatTestFloat(closePrice - 0.5),
+			Close:      formatTestFloat(closePrice),
+			Volume:     formatTestFloat(volumes[i]),
+		})
+	}
+	return candles
+}
+
+func backtestResult(excessReturnPct float64, winRatePct float64, trades int) backtest.Result {
+	return backtest.Result{
+		ExcessReturnPct: excessReturnPct,
+		WinRatePct:      winRatePct,
+		Trades:          make([]backtest.Trade, trades),
+	}
+}
+
 func closeEnough(got float64, want float64) bool {
 	return math.Abs(got-want) < 0.0000001
+}
+
+func formatTestFloat(value float64) string {
+	return strconv.FormatFloat(value, 'f', -1, 64)
 }

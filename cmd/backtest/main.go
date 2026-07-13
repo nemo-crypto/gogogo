@@ -5,8 +5,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"gogogo/internal/config"
 	"log"
-	"os"
 	"strings"
 	"time"
 
@@ -16,16 +16,38 @@ import (
 
 func main() {
 	var (
-		dsn        = flag.String("dsn", env("DATABASE_DSN", "/Users/guilinzhou/Desktop/test-nemo/gogogo/data.db"), "sqlite database path")
-		exchange   = flag.String("exchange", "binance", "exchange name")
-		marketType = flag.String("market", "spot", "market type: spot or perpetual")
-		symbols    = flag.String("symbol", "BTCUSDT", "symbol or comma-separated symbols")
-		interval   = flag.String("interval", "1h", "kline interval")
-		start      = flag.String("start", time.Now().UTC().Add(-30*24*time.Hour).Format(time.RFC3339), "start time in RFC3339")
-		end        = flag.String("end", time.Now().UTC().Format(time.RFC3339), "end time in RFC3339")
-		fast       = flag.String("fast", "3", "fast SMA window or comma-separated windows")
-		slow       = flag.String("slow", "6", "slow SMA window or comma-separated windows")
-		feeRate    = flag.Float64("fee-rate", 0.001, "fee rate per entry/exit, e.g. 0.001 = 0.1%")
+		dsn           = flag.String("dsn", env("DATABASE_DSN", "/Users/guilinzhou/Desktop/test-nemo/gogogo/data.db"), "sqlite database path")
+		exchange      = flag.String("exchange", env("EXCHANGE_NAME", "onebullex"), "exchange name")
+		marketType    = flag.String("market", "perpetual", "market type: perpetual")
+		symbols       = flag.String("symbol", "BTCUSDT", "symbol or comma-separated symbols")
+		interval      = flag.String("interval", "5m", "kline interval")
+		start         = flag.String("start", time.Now().UTC().Add(-30*24*time.Hour).Format(time.RFC3339), "start time in RFC3339")
+		end           = flag.String("end", time.Now().UTC().Format(time.RFC3339), "end time in RFC3339")
+		strategyType  = flag.String("strategy-type", "scalp-tpsl", "strategy type: scalp-tpsl or sma")
+		fast          = flag.String("fast", "3", "fast SMA window or comma-separated windows")
+		slow          = flag.String("slow", "9", "slow SMA window or comma-separated windows")
+		takeProfitPct = flag.Float64("take-profit-pct", 0.80, "fixed/fallback take profit pct for scalp-tpsl")
+		stopLossPct   = flag.Float64("stop-loss-pct", 0.45, "fixed/fallback stop loss pct for scalp-tpsl")
+		dynamicTPSL   = flag.Bool("dynamic-tpsl", true, "use ATR-based dynamic take profit and stop loss")
+		takeATRMult   = flag.Float64("take-profit-atr-mult", 1.6, "ATR multiplier for dynamic take profit")
+		stopATRMult   = flag.Float64("stop-loss-atr-mult", 1.0, "ATR multiplier for dynamic stop loss")
+		minTPPct      = flag.Float64("min-take-profit-pct", 0.55, "minimum dynamic take profit pct")
+		maxTPPct      = flag.Float64("max-take-profit-pct", 1.40, "maximum dynamic take profit pct; 0 disables cap")
+		minSLPct      = flag.Float64("min-stop-loss-pct", 0.30, "minimum dynamic stop loss pct")
+		maxSLPct      = flag.Float64("max-stop-loss-pct", 0.75, "maximum dynamic stop loss pct; 0 disables cap")
+		cooldownBars  = flag.Int("cooldown-bars", 1, "cooldown bars after scalp-tpsl exit")
+		minSpreadPct  = flag.Float64("min-trend-spread-pct", 0.03, "minimum SMA spread pct required to enter scalp-tpsl trades")
+		confirmBars   = flag.Int("confirm-bars", 1, "consecutive close direction bars required to enter scalp-tpsl trades")
+		atrWindow     = flag.Int("atr-window", 14, "ATR window for scalp-tpsl volatility filter")
+		minATRPct     = flag.Float64("min-atr-pct", 0.08, "minimum ATR pct required to enter scalp-tpsl trades")
+		maxATRPct     = flag.Float64("max-atr-pct", 1.6, "maximum ATR pct allowed to enter scalp-tpsl trades")
+		volumeWindow  = flag.Int("volume-window", 20, "volume average window for scalp-tpsl volume filter")
+		minVolume     = flag.Float64("min-volume-ratio", 1.10, "minimum current volume / average volume required to enter scalp-tpsl trades")
+		maxExtension  = flag.Float64("max-entry-extension-pct", 0.18, "maximum entry distance from fast SMA pct; zero disables")
+		pullbackBars  = flag.Int("pullback-lookback", 5, "recent bars that must touch fast SMA zone before entry; zero disables")
+		pullbackTol   = flag.Float64("pullback-tolerance-pct", 0.06, "pullback touch tolerance pct around fast SMA")
+		slippageRate  = flag.Float64("slippage-rate", 0.0005, "slippage rate per trade side for scalp-tpsl")
+		feeRate       = flag.Float64("fee-rate", 0.0005, "fee rate per entry/exit, e.g. 0.001 = 0.1%")
 	)
 	flag.Parse()
 
@@ -58,6 +80,7 @@ func main() {
 	if len(configs) == 0 {
 		log.Fatal("no valid SMA configs; fast windows must be less than slow windows")
 	}
+	parsedStrategyType := normalizedStrategyType(*strategyType)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -89,7 +112,33 @@ func main() {
 		}
 
 		for _, config := range configs {
-			result, err := backtest.RunSMACrossover(candles, config)
+			result, err := runBacktestStrategy(candles, parsedStrategyType, config, backtest.ScalpTPSLConfig{
+				FastWindow:           config.FastWindow,
+				SlowWindow:           config.SlowWindow,
+				TakeProfitPct:        *takeProfitPct,
+				StopLossPct:          *stopLossPct,
+				DynamicTPSL:          *dynamicTPSL,
+				TakeProfitATRMult:    *takeATRMult,
+				StopLossATRMult:      *stopATRMult,
+				MinTakeProfitPct:     *minTPPct,
+				MaxTakeProfitPct:     *maxTPPct,
+				MinStopLossPct:       *minSLPct,
+				MaxStopLossPct:       *maxSLPct,
+				CooldownBars:         *cooldownBars,
+				FeeRate:              *feeRate,
+				SlippageRate:         *slippageRate,
+				AllowShort:           true,
+				MinTrendSpreadPct:    *minSpreadPct,
+				ConfirmBars:          *confirmBars,
+				ATRWindow:            *atrWindow,
+				MinATRPct:            *minATRPct,
+				MaxATRPct:            *maxATRPct,
+				VolumeWindow:         *volumeWindow,
+				MinVolumeRatio:       *minVolume,
+				MaxEntryExtensionPct: *maxExtension,
+				PullbackLookback:     *pullbackBars,
+				PullbackTolerancePct: *pullbackTol,
+			})
 			if err != nil {
 				if errors.Is(err, backtest.ErrNotEnoughData) {
 					log.Printf("skip %s fast=%d slow=%d: not enough candles got=%d", symbol, config.FastWindow, config.SlowWindow, len(candles))
@@ -125,22 +174,38 @@ func printResult(runID int64, result backtest.Result) {
 	fmt.Println()
 }
 
-func env(key string, fallback string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		return fallback
+func runBacktestStrategy(candles []marketdata.Candle, strategyType string, smaConfig backtest.SMAConfig, scalpConfig backtest.ScalpTPSLConfig) (backtest.Result, error) {
+	switch strategyType {
+	case "scalp-tpsl":
+		return backtest.RunScalpTPSL(candles, scalpConfig)
+	case "sma":
+		return backtest.RunSMACrossover(candles, smaConfig)
+	default:
+		return backtest.Result{}, fmt.Errorf("unsupported strategy type %q", strategyType)
 	}
-	return value
+}
+
+func normalizedStrategyType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "scalp", "scalp_tpsl", "scalp-tpsl", "tpsl":
+		return "scalp-tpsl"
+	case "sma", "sma-crossover", "sma_crossover":
+		return "sma"
+	default:
+		return strings.ToLower(strings.TrimSpace(value))
+	}
+}
+
+func env(key string, fallback string) string {
+	return config.Env(key, fallback)
 }
 
 func parseMarketType(value string) (marketdata.MarketType, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "spot":
-		return marketdata.MarketTypeSpot, nil
 	case "perpetual", "futures", "future":
 		return marketdata.MarketTypePerpetual, nil
 	default:
-		return "", fmt.Errorf("unsupported market type %q", value)
+		return "", fmt.Errorf("unsupported market type %q: current strategy only supports perpetual", value)
 	}
 }
 

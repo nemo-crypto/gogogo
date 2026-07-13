@@ -4,7 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+	"time"
 
+	exchangemodel "gogogo/internal/exchange"
+	"gogogo/internal/marketdata"
 	"gogogo/internal/risk"
 )
 
@@ -22,7 +25,7 @@ func TestSQLiteRepositoryRecordDryRunOrderAllowed(t *testing.T) {
 			CurrentSymbolExposure: 1_000,
 		},
 		Order: risk.OrderIntent{
-			Exchange:   "binance",
+			Exchange:   "onebullex",
 			MarketType: risk.MarketTypeSpot,
 			Symbol:     "btcusdt",
 			Side:       risk.SideBuy,
@@ -66,7 +69,7 @@ func TestSQLiteRepositoryRecordDryRunOrderRejectedAndIdempotent(t *testing.T) {
 			Equity:    10_000,
 		},
 		Order: risk.OrderIntent{
-			Exchange:             "binance",
+			Exchange:             "onebullex",
 			MarketType:           risk.MarketTypePerpetual,
 			Symbol:               "solusdt",
 			Side:                 risk.SideBuy,
@@ -107,6 +110,52 @@ func TestSQLiteRepositoryRecordDryRunOrderRejectedAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestSQLiteRepositorySubmitOrderToExchangeIncludesNativeTPSL(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repo := newTestRepository(t, ctx)
+	result, err := repo.RecordDryRunOrder(ctx, DryRunRequest{
+		Account: risk.AccountSnapshot{
+			AccountID: "paper",
+			Equity:    10_000,
+		},
+		Order: risk.OrderIntent{
+			Exchange:   "onebullex",
+			MarketType: risk.MarketTypePerpetual,
+			Symbol:     "BTCUSDT",
+			Side:       risk.SideBuy,
+			Price:      60_000,
+			Quantity:   0.01,
+			StopPrice:  59_700,
+			Leverage:   1,
+		},
+		ClientOrderID:   "native-tpsl-test",
+		StrategyID:      "unit",
+		OrderType:       "market",
+		TimeInForce:     "IOC",
+		TakeProfitPrice: 60_900,
+	})
+	if err != nil {
+		t.Fatalf("record dry-run order: %v", err)
+	}
+
+	client := &captureExchangeClient{}
+	_, err = repo.SubmitOrderToExchange(ctx, client, result.Order)
+	if err != nil {
+		t.Fatalf("submit order: %v", err)
+	}
+	if client.request.TriggerProfitPrice != "60900" {
+		t.Fatalf("trigger profit price = %q, want 60900", client.request.TriggerProfitPrice)
+	}
+	if client.request.TriggerStopPrice != "59700" {
+		t.Fatalf("trigger stop price = %q, want 59700", client.request.TriggerStopPrice)
+	}
+	if client.request.ProfitOrderType != "MARKET" || client.request.StopOrderType != "MARKET" {
+		t.Fatalf("protection order types = %q/%q, want MARKET/MARKET", client.request.ProfitOrderType, client.request.StopOrderType)
+	}
+}
+
 func newTestRepository(t *testing.T, ctx context.Context) *SQLiteRepository {
 	t.Helper()
 
@@ -124,4 +173,46 @@ func newTestRepository(t *testing.T, ctx context.Context) *SQLiteRepository {
 	}
 
 	return NewSQLiteRepository(db)
+}
+
+type captureExchangeClient struct {
+	request exchangemodel.OrderRequest
+}
+
+func (c *captureExchangeClient) Klines(context.Context, exchangemodel.KlineRequest) ([]marketdata.Candle, error) {
+	return nil, nil
+}
+
+func (c *captureExchangeClient) FundingRates(context.Context, exchangemodel.FundingRateRequest) ([]marketdata.FundingRate, error) {
+	return nil, nil
+}
+
+func (c *captureExchangeClient) LatestMarkPrice(context.Context, string) (marketdata.MarkPrice, error) {
+	return marketdata.MarkPrice{}, nil
+}
+
+func (c *captureExchangeClient) ServerTime(context.Context, marketdata.MarketType) (time.Time, error) {
+	return time.Time{}, nil
+}
+
+func (c *captureExchangeClient) AccountSnapshot(context.Context, string) (exchangemodel.AccountSnapshot, error) {
+	return exchangemodel.AccountSnapshot{}, nil
+}
+
+func (c *captureExchangeClient) SubmitOrder(_ context.Context, request exchangemodel.OrderRequest) (exchangemodel.OrderStatus, error) {
+	c.request = request
+	return exchangemodel.OrderStatus{
+		ClientOrderID:   request.ClientOrderID,
+		ExchangeOrderID: "exchange-1",
+		Status:          "SUBMITTED",
+		UpdatedAt:       time.Now().UTC(),
+	}, nil
+}
+
+func (c *captureExchangeClient) CancelOrder(context.Context, string, string, string) (exchangemodel.OrderStatus, error) {
+	return exchangemodel.OrderStatus{}, nil
+}
+
+func (c *captureExchangeClient) OrderStatus(context.Context, string, string, string) (exchangemodel.OrderStatus, error) {
+	return exchangemodel.OrderStatus{}, nil
 }

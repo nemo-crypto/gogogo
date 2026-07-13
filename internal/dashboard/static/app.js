@@ -12,7 +12,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("refresh").addEventListener("click", loadDashboard);
   $("loadTable").addEventListener("click", loadTablePreview);
   $("dbTable").addEventListener("change", loadTablePreview);
-  ["market", "symbol", "interval"].forEach((id) => {
+  ["exchange", "market", "symbol", "interval"].forEach((id) => {
     $(id).addEventListener("change", loadDashboard);
   });
   document.addEventListener("visibilitychange", () => {
@@ -30,6 +30,7 @@ async function loadDashboard() {
   state.loading = true;
 
   const params = new URLSearchParams({
+    exchange: $("exchange").value,
     market: $("market").value,
     symbol: $("symbol").value,
     interval: $("interval").value,
@@ -92,7 +93,7 @@ function startAutoRefresh() {
 }
 
 function render(data) {
-  $("subtitle").textContent = "持仓 / 盈亏 / 回测";
+  $("subtitle").textContent = "OneBullEx 永续合约 / 持仓 / 盈亏 / 回测入库";
   $("generatedAt").textContent = `更新于 ${formatTime(data.generated_at)}`;
   $("runtimeBadge").textContent = data.runtime.halted ? "已停机" : "运行中";
   $("runtimeBadge").className = data.runtime.halted ? "badge badge-danger" : "badge badge-ok";
@@ -175,33 +176,17 @@ function renderStrategyOverview(data) {
   const slow = latestBacktest.slow_window || parseStrategyWindow(latestBacktest.strategy_name, 1);
   const strategyName = strategyDisplayName(latestBacktest);
   $("strategyName").textContent = strategyName;
-  const isPerpetual = data.query.market_type === "perpetual";
-  $("buyRule").previousElementSibling.textContent = isPerpetual ? "开多" : "买入";
-  $("sellRule").previousElementSibling.textContent = isPerpetual ? "开空" : "卖出";
-  if (isAdaptiveTrend(latestBacktest)) {
-    $("strategyPlainText").textContent =
-      `这是一个多币种趋势轮动策略：用 ${fast} 根 K 线看动量，用 ${slow} 根 K 线判断大趋势，并按波动率控制仓位。`;
-    $("buyRule").textContent = "强趋势 + 高排名";
-    $("sellRule").textContent = "排名跌出 / 移动止损";
-    $("strategyLimit").textContent = `手续费 ${pct((latestBacktest.fee_rate || 0) * 100)}`;
-    $("currentSignal").textContent = latestSignal ? actionLabel(latestSignal.action) : "看回测轮动";
-    $("signalReason").textContent = "优先选择强势币，过滤过高 funding，避免单币种满仓追涨。";
-    return;
-  }
-  $("strategyPlainText").textContent = isPerpetual
-    ? `这是一个合约短线趋势策略：用 ${fast} 根 K 线均价判断短线方向，用 ${slow} 根 K 线均价过滤趋势，允许开多或开空。`
-    : `这是一个现货短线趋势策略：用 ${fast} 根 K 线均价代表短期走势，用 ${slow} 根 K 线均价代表长期走势，只做多不做空。`;
-  $("buyRule").textContent = isPerpetual
-    ? `开多：${fast} 均线 > ${slow} 均线且价格上行`
-    : `${fast} 均线 > ${slow} 均线且价格上行`;
-  $("sellRule").textContent = isPerpetual
-    ? `开空：${fast} 均线 < ${slow} 均线且价格下行`
-    : `平多：止盈 / 止损 / ${fast} 均线 < ${slow} 均线`;
+  $("buyRule").previousElementSibling.textContent = "开多";
+  $("sellRule").previousElementSibling.textContent = "开空";
+  $("strategyPlainText").textContent =
+    `这是一个合约短线 TPSL 趋势策略：用 ${fast} 根 K 线均价判断短线方向，用 ${slow} 根 K 线均价过滤趋势，允许开多或开空，并通过止盈止损退出。`;
+  $("buyRule").textContent = `开多：${fast} 均线 > ${slow} 均线且价格上行`;
+  $("sellRule").textContent = `开空：${fast} 均线 < ${slow} 均线且价格下行`;
   $("strategyLimit").textContent = `手续费 ${pct((latestBacktest.fee_rate || 0) * 100)}`;
   $("currentSignal").textContent = latestSignal ? actionLabel(latestSignal.action) : "暂无信号";
   $("signalReason").textContent = latestSignal
     ? signalText(latestSignal)
-    : "运行 papertrade 后，这里会显示最新买入或观望信号。";
+    : "运行 papertrade 后，这里会显示最新开多、开空或观望信号。";
 }
 
 function renderChart(series) {
@@ -334,8 +319,8 @@ function renderTradeActions(data) {
   const orders = (data.orders || []).map((row) => ({
     time: row.created_at,
     title: `${row.symbol} ${sideLabel(row.side)}`,
-    meta: `${marketLabel(row.market_type)} / ${statusLabel(row.status)}`,
-    value: `${money(row.quantity)} @ ${money(row.price)} / TP ${moneyOrDash(row.take_profit_price)} SL ${moneyOrDash(row.stop_price)}`,
+    meta: `${marketLabel(row.market_type)} / ${statusLabel(row.status)}${row.exchange_order_id ? ` / OneBullEx ${row.exchange_order_id}` : ""}`,
+    value: `${money(row.quantity)} @ ${money(row.price)} / TP ${moneyOrDash(row.take_profit_price)} SL ${moneyOrDash(row.stop_price)}${row.exchange_status ? ` / ${row.exchange_status}` : ""}`,
     tone: row.risk_decision === "allow" ? "positive" : "negative",
   }));
   const signals = (data.signals || []).map((row) => ({
@@ -391,9 +376,7 @@ function renderBalances(rows) {
 
 function renderPositions(rows) {
   $("positionUpdatedAt").textContent = rows.length ? `更新 ${formatTime(rows[0].snapshot_time)}` : "暂无持仓";
-  const market = state.data?.query?.market_type || rows[0]?.market_type || "perpetual";
-  const title = market === "spot" ? "现货持仓" : "合约持仓";
-  $("positionRows").innerHTML = positionGroup(title, rows);
+  $("positionRows").innerHTML = positionGroup("合约持仓", rows);
 }
 
 function positionGroup(title, rows) {
@@ -402,7 +385,7 @@ function positionGroup(title, rows) {
       <strong>${escapeHTML(title)}</strong>
       <span>${rows.length ? `${number(rows.length)} 个持仓` : "暂无"}</span>
     </div>
-    ${rows.length ? rows.map(positionCard).join("") : emptyBlock(title === "现货持仓" ? "暂无现货持仓" : "暂无合约持仓")}
+    ${rows.length ? rows.map(positionCard).join("") : emptyBlock("暂无合约持仓")}
   </section>`;
 }
 
@@ -410,11 +393,9 @@ function positionCard(row) {
   const pnl = positionPnL(row);
   const pnlPct = positionPnLPct(row, pnl.value);
   const markSource =
-    row.mark_price_source === "latest_spot_close"
-      ? "现货最新价"
-      : row.mark_price_source === "latest_mark_price"
-        ? "合约标记价"
-        : "快照价";
+    row.mark_price_source === "latest_mark_price"
+      ? "合约标记价"
+      : "快照价";
   const snapshotLabel = row.snapshot_stale ? "账户快照已过期" : "账户快照";
   return `<div class="position-card">
         <div class="position-head">
@@ -653,7 +634,6 @@ function escapeHTML(value) {
 
 function marketLabel(value) {
   const labels = {
-    spot: "现货",
     perpetual: "永续合约",
   };
   return labels[value] || value || "--";
@@ -719,19 +699,12 @@ function actionLabel(value) {
 }
 
 function strategyDisplayName(row) {
-  if (isAdaptiveTrend(row)) {
-    return "多币种自适应趋势轮动";
-  }
   const fast = row.fast_window || parseStrategyWindow(row.strategy_name, 0);
   const slow = row.slow_window || parseStrategyWindow(row.strategy_name, 1);
   if (fast && slow) {
     return `SMA ${fast}/${slow} 均线交叉`;
   }
   return row.strategy_name || "--";
-}
-
-function isAdaptiveTrend(row) {
-  return String(row.strategy_name || "").startsWith("adaptive_trend_rotation_");
 }
 
 function parseStrategyWindow(name, index) {

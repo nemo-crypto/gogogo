@@ -11,7 +11,7 @@ func TestEvaluateOrderAllowsConservativeSpotOrder(t *testing.T) {
 		CurrentTotalExposure:  2_000,
 		CurrentSymbolExposure: 1_000,
 	}, OrderIntent{
-		Exchange:   "binance",
+		Exchange:   "onebullex",
 		MarketType: MarketTypeSpot,
 		Symbol:     "btcusdt",
 		Side:       SideBuy,
@@ -42,7 +42,7 @@ func TestEvaluateOrderRejectsExposureLimit(t *testing.T) {
 		CurrentTotalExposure:  9_000,
 		CurrentSymbolExposure: 2_900,
 	}, OrderIntent{
-		Exchange:   "binance",
+		Exchange:   "onebullex",
 		MarketType: MarketTypeSpot,
 		Symbol:     "ETHUSDT",
 		Side:       SideBuy,
@@ -73,7 +73,7 @@ func TestEvaluateOrderReduceOnlyBypassesExposureIncrease(t *testing.T) {
 		CurrentTotalExposure:  12_000,
 		CurrentSymbolExposure: 5_000,
 	}, OrderIntent{
-		Exchange:   "binance",
+		Exchange:   "onebullex",
 		MarketType: MarketTypePerpetual,
 		Symbol:     "BTCUSDT",
 		Side:       SideSell,
@@ -97,7 +97,7 @@ func TestEvaluateOrderRejectsPerpetualLeverageAndLiquidationRisk(t *testing.T) {
 		AccountID: "research",
 		Equity:    10_000,
 	}, OrderIntent{
-		Exchange:             "binance",
+		Exchange:             "onebullex",
 		MarketType:           MarketTypePerpetual,
 		Symbol:               "SOLUSDT",
 		Side:                 SideBuy,
@@ -135,7 +135,7 @@ func TestEvaluateOrderRejectsPerpetualMarginAndAvailableBalanceLimits(t *testing
 		AvailableBalance:     1_000,
 		CurrentInitialMargin: 3_000,
 	}, OrderIntent{
-		Exchange:   "binance",
+		Exchange:   "onebullex",
 		MarketType: MarketTypePerpetual,
 		Symbol:     "BTCUSDT",
 		Side:       SideBuy,
@@ -160,6 +160,40 @@ func TestEvaluateOrderRejectsPerpetualMarginAndAvailableBalanceLimits(t *testing
 	}
 }
 
+func TestEvaluateOrderRejectsExchangeRuleViolations(t *testing.T) {
+	t.Parallel()
+
+	config := DefaultConfig()
+	config.MinQuantity = 0.001
+	config.QuantityStep = 0.001
+	config.PriceTickSize = 0.1
+	result, err := EvaluateOrder(config, AccountSnapshot{
+		AccountID:        "research",
+		Equity:           10_000,
+		AvailableBalance: 10_000,
+	}, OrderIntent{
+		Exchange:   "onebullex",
+		MarketType: MarketTypePerpetual,
+		Symbol:     "BTCUSDT",
+		Side:       SideBuy,
+		Price:      60000.03,
+		Quantity:   0.0009,
+		StopPrice:  59899.97,
+		Leverage:   2,
+	})
+	if err != nil {
+		t.Fatalf("evaluate order: %v", err)
+	}
+	if result.Decision != DecisionReject {
+		t.Fatalf("decision = %s, want reject", result.Decision)
+	}
+	for _, eventType := range []string{"min_quantity_limit", "quantity_step_limit", "price_tick_limit", "stop_price_tick_limit"} {
+		if !hasEvent(result, eventType) {
+			t.Fatalf("missing event %s: %v", eventType, result.Events)
+		}
+	}
+}
+
 func TestEvaluateOrderUsesEstimatedLiquidationPrice(t *testing.T) {
 	t.Parallel()
 
@@ -170,7 +204,7 @@ func TestEvaluateOrderUsesEstimatedLiquidationPrice(t *testing.T) {
 		AccountID: "research",
 		Equity:    10_000,
 	}, OrderIntent{
-		Exchange:   "binance",
+		Exchange:   "onebullex",
 		MarketType: MarketTypePerpetual,
 		Symbol:     "BTCUSDT",
 		Side:       SideSell,
@@ -198,7 +232,7 @@ func TestEvaluateOrderHaltsOnDailyLoss(t *testing.T) {
 		Equity:           10_000,
 		DailyRealizedPnL: -250,
 	}, OrderIntent{
-		Exchange:   "binance",
+		Exchange:   "onebullex",
 		MarketType: MarketTypeSpot,
 		Symbol:     "BNBUSDT",
 		Side:       SideBuy,

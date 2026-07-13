@@ -4,11 +4,12 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"gogogo/internal/config"
 	"log"
-	"os"
 	"strings"
 	"time"
 
+	"gogogo/internal/exchange/onebullex"
 	"gogogo/internal/execution"
 	"gogogo/internal/marketdata"
 	"gogogo/internal/risk"
@@ -26,12 +27,14 @@ func run() error {
 		dsn                  = flag.String("dsn", env("DATABASE_DSN", "/Users/guilinzhou/Desktop/test-nemo/gogogo/data.db"), "sqlite database path")
 		accountID            = flag.String("account", "research", "account id")
 		strategyID           = flag.String("strategy", "manual-dry-run", "strategy id")
+		exchange             = flag.String("exchange", env("EXCHANGE_NAME", onebullex.ExchangeName), "exchange name")
 		clientOrderID        = flag.String("client-order-id", "", "unique client order id; auto-generated if empty")
-		market               = flag.String("market", "spot", "market type: spot or perpetual")
+		market               = flag.String("market", "perpetual", "market type: perpetual")
 		symbol               = flag.String("symbol", "BTCUSDT", "symbol")
 		side                 = flag.String("side", "buy", "side: buy or sell")
 		orderType            = flag.String("order-type", "limit", "order type")
 		timeInForce          = flag.String("time-in-force", "GTC", "time in force")
+		submitExchange       = flag.Bool("submit-exchange", false, "submit allowed order to OneBullEx; also requires ONEBULLEX_LIVE_TRADING=true")
 		price                = flag.Float64("price", 0, "planned order price")
 		quantity             = flag.Float64("quantity", 0, "planned order quantity")
 		stopPrice            = flag.Float64("stop-price", 0, "planned stop price; 0 disables single-order risk check")
@@ -89,7 +92,7 @@ func run() error {
 			SnapshotTime:          time.Now().UTC(),
 		},
 		Order: risk.OrderIntent{
-			Exchange:             "binance",
+			Exchange:             *exchange,
 			MarketType:           parseMarketType(*market),
 			Symbol:               *symbol,
 			Side:                 parseSide(*side),
@@ -123,6 +126,16 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if *submitExchange && result.Order.RiskDecision == risk.DecisionAllow {
+		if normalizeExchangeName(result.Order.Exchange) != onebullex.ExchangeName {
+			return fmt.Errorf("exchange submit currently supports %s only", onebullex.ExchangeName)
+		}
+		updated, err := repo.SubmitOrderToExchange(ctx, oneBullExClientFromEnv(), result.Order)
+		if err != nil {
+			return fmt.Errorf("submit onebullex order: %w", err)
+		}
+		result.Order = updated
+	}
 
 	printResult(result)
 	return nil
@@ -130,7 +143,7 @@ func run() error {
 
 func printResult(result execution.DryRunResult) {
 	fmt.Printf("order_id=%d client_order_id=%s\n", result.Order.ID, result.Order.ClientOrderID)
-	fmt.Printf("status=%s risk_decision=%s risk_reason=%s\n", result.Order.Status, result.Order.RiskDecision, result.Order.RiskReason)
+	fmt.Printf("status=%s risk_decision=%s risk_reason=%s exchange_order_id=%s exchange_status=%s\n", result.Order.Status, result.Order.RiskDecision, result.Order.RiskReason, result.Order.ExchangeOrderID, result.Order.ExchangeStatus)
 	fmt.Printf("market=%s symbol=%s side=%s price=%.8f quantity=%.8f stop=%.8f take_profit=%.8f reduce_only=%t\n",
 		result.Order.MarketType,
 		result.Order.Symbol,
@@ -155,12 +168,40 @@ func printResult(result execution.DryRunResult) {
 	}
 }
 
+func oneBullExClientFromEnv() *onebullex.Client {
+	return onebullex.NewClient(
+		onebullex.WithBaseURL(env("ONEBULLEX_BASE_URL", "")),
+		onebullex.WithCredentials(env("ONEBULLEX_API_KEY", ""), env("ONEBULLEX_SECRET_KEY", "")),
+		onebullex.WithTradingEnabled(envBool("ONEBULLEX_LIVE_TRADING", false)),
+	)
+}
+
+func envBool(key string, fallback bool) bool {
+	value := strings.ToLower(strings.TrimSpace(env(key, "")))
+	switch value {
+	case "1", "true", "yes", "y", "on":
+		return true
+	case "0", "false", "no", "n", "off":
+		return false
+	default:
+		return fallback
+	}
+}
+
+func normalizeExchangeName(exchangeName string) string {
+	exchangeName = strings.ToLower(strings.TrimSpace(exchangeName))
+	if exchangeName == "onebull" || exchangeName == "1bullex" {
+		return onebullex.ExchangeName
+	}
+	return exchangeName
+}
+
 func parseMarketType(value string) risk.MarketType {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "perpetual", "futures", "future":
 		return risk.MarketTypePerpetual
 	default:
-		return risk.MarketTypeSpot
+		return risk.MarketTypePerpetual
 	}
 }
 
@@ -174,9 +215,5 @@ func parseSide(value string) risk.Side {
 }
 
 func env(key string, fallback string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		return fallback
-	}
-	return value
+	return config.Env(key, fallback)
 }

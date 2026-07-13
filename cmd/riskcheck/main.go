@@ -3,10 +3,12 @@ package main
 import (
 	"flag"
 	"fmt"
+	"gogogo/internal/config"
 	"log"
 	"strings"
 	"time"
 
+	"gogogo/internal/exchange/onebullex"
 	"gogogo/internal/risk"
 )
 
@@ -18,7 +20,8 @@ func main() {
 
 func run() error {
 	var (
-		market               = flag.String("market", "spot", "market type: spot or perpetual")
+		exchange             = flag.String("exchange", env("EXCHANGE_NAME", onebullex.ExchangeName), "exchange name")
+		market               = flag.String("market", "perpetual", "market type: perpetual")
 		symbol               = flag.String("symbol", "BTCUSDT", "symbol")
 		side                 = flag.String("side", "buy", "side: buy or sell")
 		price                = flag.Float64("price", 0, "planned order price")
@@ -73,7 +76,7 @@ func run() error {
 		CurrentMaintMargin:    *maintenanceMargin,
 		SnapshotTime:          time.Now().UTC(),
 	}, risk.OrderIntent{
-		Exchange:             "binance",
+		Exchange:             *exchange,
 		MarketType:           parseMarketType(*market),
 		Symbol:               *symbol,
 		Side:                 parseSide(*side),
@@ -105,12 +108,16 @@ func run() error {
 	return nil
 }
 
+func env(key string, fallback string) string {
+	return config.Env(key, fallback)
+}
+
 func parseMarketType(value string) risk.MarketType {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "perpetual", "futures", "future":
 		return risk.MarketTypePerpetual
 	default:
-		return risk.MarketTypeSpot
+		return risk.MarketTypePerpetual
 	}
 }
 

@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
+	"gogogo/internal/config"
 	"log"
-	"os"
 	"time"
 
 	"gogogo/internal/marketdata"
@@ -29,9 +29,5 @@ func main() {
 }
 
 func env(key, fallback string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		return fallback
-	}
-	return value
+	return config.Env(key, fallback)
 }

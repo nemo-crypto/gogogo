@@ -5,33 +5,30 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 	"time"
 
-	"gogogo/internal/exchange/binance"
+	"gogogo/internal/config"
+	exchangemodel "gogogo/internal/exchange"
+	"gogogo/internal/exchange/onebullex"
 	"gogogo/internal/marketdata"
 )
 
 func main() {
 	var (
 		dsn        = flag.String("dsn", env("DATABASE_DSN", "/Users/guilinzhou/Desktop/test-nemo/gogogo/data.db"), "sqlite database path")
-		exchange   = flag.String("exchange", "binance", "exchange name")
+		exchange   = flag.String("exchange", env("EXCHANGE_NAME", onebullex.ExchangeName), "exchange name: onebullex")
 		dataset    = flag.String("dataset", "klines", "dataset: klines, funding, mark-price")
-		marketType = flag.String("market", "spot", "market type: spot or perpetual")
-		symbols    = flag.String("symbols", "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT", "comma-separated symbols")
-		interval   = flag.String("interval", "1h", "kline interval")
+		marketType = flag.String("market", "perpetual", "market type: perpetual")
+		symbols    = flag.String("symbols", "BTCUSDT", "comma-separated symbols")
+		interval   = flag.String("interval", "5m", "kline interval")
 		start      = flag.String("start", time.Now().UTC().Add(-24*time.Hour).Format(time.RFC3339), "start time in RFC3339")
 		end        = flag.String("end", time.Now().UTC().Format(time.RFC3339), "end time in RFC3339")
-		limit      = flag.Int("limit", 1000, "max klines per symbol, capped at 1000")
+		limit      = flag.Int("limit", 1500, "max klines per symbol, capped at 1500")
 		watch      = flag.Bool("watch", false, "keep polling public market data")
 		pollEvery  = flag.Duration("poll-interval", 15*time.Second, "poll interval when -watch is enabled")
 	)
 	flag.Parse()
-
-	if *exchange != "binance" {
-		log.Fatalf("unsupported exchange %q", *exchange)
-	}
 
 	startTime, err := time.Parse(time.RFC3339, *start)
 	if err != nil {
@@ -63,12 +60,16 @@ func main() {
 	defer db.Close()
 
 	repo := marketdata.NewSQLiteRepository(db)
-	client := binance.NewClient()
+	client, err := newMarketClient(*exchange)
+	if err != nil {
+		log.Fatal(err)
+	}
+	exchangeName := normalizeExchangeName(*exchange)
 
 	request := syncBatchRequest{
 		repo:       repo,
 		client:     client,
-		exchange:   *exchange,
+		exchange:   exchangeName,
 		dataset:    *dataset,
 		marketType: parsedMarketType,
 		marketName: *marketType,
@@ -97,7 +98,7 @@ func main() {
 
 type syncBatchRequest struct {
 	repo       *marketdata.SQLiteRepository
-	client     *binance.Client
+	client     marketClient
 	exchange   string
 	dataset    string
 	marketType marketdata.MarketType
@@ -169,7 +170,7 @@ func watchPublicMarketData(ctx context.Context, request syncBatchRequest) error 
 
 type syncRequest struct {
 	repo       *marketdata.SQLiteRepository
-	client     *binance.Client
+	client     marketClient
 	exchange   string
 	dataset    string
 	marketType marketdata.MarketType
@@ -211,7 +212,7 @@ func syncKlines(ctx context.Context, request syncRequest) (int, error) {
 			return total, fmt.Errorf("too many kline pages for %s", request.symbol)
 		}
 
-		candles, err := request.client.Klines(ctx, binance.KlineRequest{
+		candles, err := request.client.Klines(ctx, exchangemodel.KlineRequest{
 			MarketType: request.marketType,
 			Symbol:     request.symbol,
 			Interval:   request.interval,
@@ -249,7 +250,7 @@ func syncKlines(ctx context.Context, request syncRequest) (int, error) {
 }
 
 func syncFundingRates(ctx context.Context, request syncRequest) (int, error) {
-	rates, err := request.client.FundingRates(ctx, binance.FundingRateRequest{
+	rates, err := request.client.FundingRates(ctx, exchangemodel.FundingRateRequest{
 		Symbol:    request.symbol,
 		StartTime: request.start,
 		EndTime:   request.end,
@@ -283,21 +284,38 @@ func syncMarkPrice(ctx context.Context, request syncRequest) (int, error) {
 }
 
 func env(key string, fallback string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		return fallback
+	return config.Env(key, fallback)
+}
+
+type marketClient interface {
+	Klines(ctx context.Context, request exchangemodel.KlineRequest) ([]marketdata.Candle, error)
+	FundingRates(ctx context.Context, request exchangemodel.FundingRateRequest) ([]marketdata.FundingRate, error)
+	LatestMarkPrice(ctx context.Context, symbol string) (marketdata.MarkPrice, error)
+}
+
+func newMarketClient(exchangeName string) (marketClient, error) {
+	switch normalizeExchangeName(exchangeName) {
+	case onebullex.ExchangeName:
+		return onebullex.NewClient(onebullex.WithBaseURL(env("ONEBULLEX_BASE_URL", ""))), nil
+	default:
+		return nil, fmt.Errorf("unsupported exchange %q", exchangeName)
 	}
-	return value
+}
+
+func normalizeExchangeName(exchangeName string) string {
+	exchangeName = strings.ToLower(strings.TrimSpace(exchangeName))
+	if exchangeName == "onebull" || exchangeName == "1bullex" {
+		return onebullex.ExchangeName
+	}
+	return exchangeName
 }
 
 func parseMarketType(value string) (marketdata.MarketType, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "spot":
-		return marketdata.MarketTypeSpot, nil
 	case "perpetual", "futures", "future":
 		return marketdata.MarketTypePerpetual, nil
 	default:
-		return "", fmt.Errorf("unsupported market type %q", value)
+		return "", fmt.Errorf("unsupported market type %q: current strategy only supports perpetual", value)
 	}
 }
 
@@ -321,10 +339,10 @@ func parseSymbols(value string) []string {
 
 func normalizeLimit(limit int) int {
 	if limit <= 0 {
-		return 1000
+		return 1500
 	}
-	if limit > 1000 {
-		return 1000
+	if limit > 1500 {
+		return 1500
 	}
 	return limit
 }

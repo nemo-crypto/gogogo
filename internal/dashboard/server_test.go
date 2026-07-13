@@ -26,7 +26,7 @@ func TestDashboardAPI(t *testing.T) {
 	seedDashboardData(t, db)
 
 	server := NewServer(db, "")
-	request := httptest.NewRequest(http.MethodGet, "/api/dashboard?market=perpetual&symbol=BTCUSDT&interval=1h&limit=20", nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/dashboard?exchange=onebullex&market=perpetual&symbol=BTCUSDT&interval=1h&limit=20", nil)
 	response := httptest.NewRecorder()
 	server.Routes().ServeHTTP(response, request)
 
@@ -38,8 +38,8 @@ func TestDashboardAPI(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&data); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if got := len(data.PriceSeries); got != 0 {
-		t.Fatalf("price series length = %d, want 0", got)
+	if got := len(data.PriceSeries); got != 2 {
+		t.Fatalf("price series length = %d, want 2", got)
 	}
 	if data.Counts["candles"] != 2 {
 		t.Fatalf("candles count = %d, want 2", data.Counts["candles"])
@@ -95,17 +95,15 @@ INSERT INTO positions (
 	mark_price, liquidation_price, leverage, margin_mode, unrealized_pnl, notional,
 	liquidation_distance_pct, snapshot_time, created_at
 ) VALUES
-	('paper', 'binance', 'perpetual', 'BTCUSDT', 'long', 0.01, 60000,
-		61000, 50000, 2, 'isolated', 10, 610, 18, ?, ?),
-	('paper', 'binance', 'spot', 'BTCUSDT', 'long', 0,
-		0, 64200, 0, 1, 'paper', 0, 0, 0, ?, ?);
-`, now.Add(-time.Hour), now.Add(-time.Hour), now, now)
+	('paper', 'onebullex', 'perpetual', 'BTCUSDT', 'long', 0.01, 60000,
+		61000, 50000, 2, 'isolated', 10, 610, 18, ?, ?);
+`, now.Add(-time.Hour), now.Add(-time.Hour))
 	if err != nil {
 		t.Fatalf("seed positions: %v", err)
 	}
 
 	server := NewServer(db, "")
-	request := httptest.NewRequest(http.MethodGet, "/api/dashboard?market=spot&symbol=BTCUSDT&interval=1m", nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/dashboard?exchange=onebullex&market=perpetual&symbol=BTCUSDT&interval=1m", nil)
 	response := httptest.NewRecorder()
 	server.Routes().ServeHTTP(response, request)
 
@@ -121,73 +119,7 @@ INSERT INTO positions (
 	}
 }
 
-func TestDashboardUsesLatestSpotCandleForSpotPaperPosition(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	defer db.Close()
-
-	if err := storage.InitSQLiteSchema(t.Context(), db); err != nil {
-		t.Fatalf("init schema: %v", err)
-	}
-	now := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
-	_, err = db.ExecContext(t.Context(), `
-INSERT INTO candles (
-	exchange, market_type, symbol, interval, open_time, close_time,
-	open_price, high_price, low_price, close_price, volume, quote_volume,
-	trade_count, source, created_at, updated_at
-) VALUES (
-	'binance', 'spot', 'BTCUSDT', '1m', ?, ?, '64100', '64210', '64090',
-	'64200', '10', '642000', 10, 'test', ?, ?
-);
-
-INSERT INTO mark_prices (
-	exchange, symbol, event_time, mark_price, index_price, estimated_settle_price,
-	next_funding_time, created_at
-) VALUES (
-	'binance', 'BTCUSDT', ?, '65000', '65000', '0', ?, ?
-);
-
-INSERT INTO positions (
-	account_id, exchange, market_type, symbol, position_side, quantity, entry_price,
-	mark_price, liquidation_price, leverage, margin_mode, unrealized_pnl, notional,
-	liquidation_distance_pct, snapshot_time, created_at
-) VALUES (
-	'paper', 'binance', 'spot', 'BTCUSDT', 'long', 0.01, 64100,
-	64100, 0, 1, 'paper', 0, 641, 0, ?, ?
-);
-`, now, now.Add(time.Minute), now, now,
-		now, now.Add(8*time.Hour), now,
-		now, now)
-	if err != nil {
-		t.Fatalf("seed spot paper data: %v", err)
-	}
-
-	server := NewServer(db, "")
-	request := httptest.NewRequest(http.MethodGet, "/api/dashboard?market=spot&symbol=BTCUSDT&interval=1m", nil)
-	response := httptest.NewRecorder()
-	server.Routes().ServeHTTP(response, request)
-
-	if response.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
-	}
-	var data Data
-	if err := json.NewDecoder(response.Body).Decode(&data); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if len(data.Positions) != 1 {
-		t.Fatalf("positions length = %d, want 1", len(data.Positions))
-	}
-	if data.Positions[0].MarkPrice != 64200 {
-		t.Fatalf("position mark price = %.2f, want latest spot close 64200", data.Positions[0].MarkPrice)
-	}
-	if data.Positions[0].UnrealizedPnL != 1 {
-		t.Fatalf("position pnl = %.2f, want 1", data.Positions[0].UnrealizedPnL)
-	}
-}
-
-func TestDashboardKeepsSpotAndPerpetualPositionsSeparate(t *testing.T) {
+func TestDashboardUsesLatestMarkForPerpetualPaperPosition(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
@@ -199,20 +131,11 @@ func TestDashboardKeepsSpotAndPerpetualPositionsSeparate(t *testing.T) {
 	}
 	now := time.Date(2026, 7, 13, 0, 45, 0, 0, time.UTC)
 	_, err = db.ExecContext(t.Context(), `
-INSERT INTO candles (
-	exchange, market_type, symbol, interval, open_time, close_time,
-	open_price, high_price, low_price, close_price, volume, quote_volume,
-	trade_count, source, created_at, updated_at
-) VALUES (
-	'binance', 'spot', 'BTCUSDT', '1m', ?, ?, '63680', '63700', '63670',
-	'63690', '10', '636900', 10, 'test', ?, ?
-);
-
 INSERT INTO mark_prices (
 	exchange, symbol, event_time, mark_price, index_price, estimated_settle_price,
 	next_funding_time, created_at
 ) VALUES (
-	'binance', 'BTCUSDT', ?, '63650', '63670', '0', ?, ?
+	'onebullex', 'BTCUSDT', ?, '63650', '63670', '0', ?, ?
 );
 
 INSERT INTO positions (
@@ -220,20 +143,15 @@ INSERT INTO positions (
 	mark_price, liquidation_price, leverage, margin_mode, unrealized_pnl, notional,
 	liquidation_distance_pct, snapshot_time, created_at
 ) VALUES
-	('paper', 'binance', 'spot', 'BTCUSDT', 'short', 0,
-		0, 63690, 0, 1, 'paper', 0, 0, 0, ?, ?),
-	('paper', 'binance', 'perpetual', 'BTCUSDT', 'short', 0.01, 63713.8,
+	('paper', 'onebullex', 'perpetual', 'BTCUSDT', 'short', 0.01, 63713.8,
 		63650, 0, 1, 'paper', 0.638, 636.5, 0, ?, ?);
-`, now, now.Add(time.Minute), now, now,
-		now, now.Add(8*time.Hour), now,
-		now, now,
-		now, now)
+`, now, now.Add(8*time.Hour), now, now, now)
 	if err != nil {
-		t.Fatalf("seed mixed market positions: %v", err)
+		t.Fatalf("seed perpetual position: %v", err)
 	}
 
 	server := NewServer(db, "")
-	request := httptest.NewRequest(http.MethodGet, "/api/dashboard?market=perpetual&symbol=BTCUSDT&interval=1m", nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/dashboard?exchange=onebullex&market=perpetual&symbol=BTCUSDT&interval=1m", nil)
 	response := httptest.NewRecorder()
 	server.Routes().ServeHTTP(response, request)
 
@@ -322,15 +240,15 @@ INSERT INTO candles (
 	open_price, high_price, low_price, close_price, volume, quote_volume,
 	trade_count, source, created_at, updated_at
 ) VALUES
-	('binance', 'spot', 'BTCUSDT', '1h', ?, ?, '100', '110', '95', '105', '10', '1000', 10, 'test', ?, ?),
-	('binance', 'spot', 'BTCUSDT', '1h', ?, ?, '105', '115', '100', '112', '12', '1300', 12, 'test', ?, ?);
+	('onebullex', 'perpetual', 'BTCUSDT', '1h', ?, ?, '100', '110', '95', '105', '10', '1000', 10, 'test', ?, ?),
+	('onebullex', 'perpetual', 'BTCUSDT', '1h', ?, ?, '105', '115', '100', '112', '12', '1300', 12, 'test', ?, ?);
 
 INSERT INTO backtest_runs (
 	strategy_name, exchange, market_type, symbol, interval, start_time, end_time,
 	fast_window, slow_window, fee_rate, initial_equity, final_equity, total_return_pct,
 	buy_hold_return_pct, excess_return_pct, max_drawdown_pct, trade_count, win_rate_pct, created_at
 ) VALUES (
-	'sma_crossover_12_48', 'binance', 'perpetual', 'BTCUSDT', '1h', ?, ?, 12, 48,
+	'sma_crossover_12_48', 'onebullex', 'perpetual', 'BTCUSDT', '1h', ?, ?, 12, 48,
 	0.001, 10000, 10100, 1, 0.5, 0.5, 2, 3, 66.6, ?
 );
 
@@ -339,7 +257,7 @@ INSERT INTO positions (
 	mark_price, liquidation_price, leverage, margin_mode, unrealized_pnl, notional,
 	liquidation_distance_pct, snapshot_time, created_at
 ) VALUES (
-	'live-readonly', 'binance', 'perpetual', 'BTCUSDT', 'long', 0.01, 60000,
+	'live-readonly', 'onebullex', 'perpetual', 'BTCUSDT', 'long', 0.01, 60000,
 	61000, 50000, 2, 'isolated', 10, 610, 18, ?, ?
 );
 
@@ -347,7 +265,7 @@ INSERT INTO mark_prices (
 	exchange, symbol, event_time, mark_price, index_price, estimated_settle_price,
 	next_funding_time, created_at
 ) VALUES (
-	'binance', 'BTCUSDT', ?, '64000', '63990', '0', ?, ?
+	'onebullex', 'BTCUSDT', ?, '64000', '63990', '0', ?, ?
 );
 `, now, now.Add(time.Hour), now, now,
 		now.Add(time.Hour), now.Add(2*time.Hour), now, now,

@@ -50,6 +50,9 @@ type Config struct {
 	MinLiquidationDistancePct float64
 	MaintenanceMarginRatePct  float64
 	MaxAbsFundingRatePct      float64
+	MinQuantity               float64
+	QuantityStep              float64
+	PriceTickSize             float64
 }
 
 func DefaultConfig() Config {
@@ -65,6 +68,9 @@ func DefaultConfig() Config {
 		MinLiquidationDistancePct: 10,
 		MaintenanceMarginRatePct:  0.5,
 		MaxAbsFundingRatePct:      0.05,
+		MinQuantity:               0,
+		QuantityStep:              0,
+		PriceTickSize:             0,
 	}
 }
 
@@ -152,6 +158,18 @@ func EvaluateOrder(config Config, account AccountSnapshot, order OrderIntent) (R
 	}
 
 	if !order.ReduceOnly {
+		if config.MinQuantity > 0 && order.Quantity+1e-12 < config.MinQuantity {
+			result.add(DecisionReject, SeverityCritical, "min_quantity_limit", fmt.Sprintf("quantity %.8f below minimum %.8f", order.Quantity, config.MinQuantity))
+		}
+		if config.QuantityStep > 0 && !isStepAligned(order.Quantity, config.QuantityStep) {
+			result.add(DecisionReject, SeverityCritical, "quantity_step_limit", fmt.Sprintf("quantity %.8f is not aligned to step %.8f", order.Quantity, config.QuantityStep))
+		}
+		if config.PriceTickSize > 0 && !isStepAligned(order.Price, config.PriceTickSize) {
+			result.add(DecisionReject, SeverityCritical, "price_tick_limit", fmt.Sprintf("price %.8f is not aligned to tick %.8f", order.Price, config.PriceTickSize))
+		}
+		if config.PriceTickSize > 0 && order.StopPrice > 0 && !isStepAligned(order.StopPrice, config.PriceTickSize) {
+			result.add(DecisionReject, SeverityCritical, "stop_price_tick_limit", fmt.Sprintf("stop price %.8f is not aligned to tick %.8f", order.StopPrice, config.PriceTickSize))
+		}
 		result.TotalExposure = account.CurrentTotalExposure + result.OrderNotional
 		result.SymbolExposure = account.CurrentSymbolExposure + result.OrderNotional
 		if exposurePct(result.SymbolExposure, account.Equity) > config.MaxSymbolExposurePct {
@@ -246,6 +264,15 @@ func validateConfig(config Config) error {
 	if config.MaxAbsFundingRatePct < 0 {
 		return errors.New("max abs funding rate pct cannot be negative")
 	}
+	if config.MinQuantity < 0 {
+		return errors.New("min quantity cannot be negative")
+	}
+	if config.QuantityStep < 0 {
+		return errors.New("quantity step cannot be negative")
+	}
+	if config.PriceTickSize < 0 {
+		return errors.New("price tick size cannot be negative")
+	}
 	return nil
 }
 
@@ -316,6 +343,14 @@ func orderRisk(order OrderIntent) float64 {
 		return 0
 	}
 	return math.Abs(order.Price-order.StopPrice) * order.Quantity
+}
+
+func isStepAligned(value float64, step float64) bool {
+	if step <= 0 {
+		return true
+	}
+	ratio := value / step
+	return math.Abs(ratio-math.Round(ratio)) < 1e-9
 }
 
 func orderInitialMargin(order OrderIntent) float64 {

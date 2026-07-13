@@ -35,7 +35,7 @@ func TestSQLiteRepositorySnapshots(t *testing.T) {
 	}
 	if _, err := repo.SavePositionSnapshot(ctx, PositionSnapshot{
 		AccountID:        "research",
-		Exchange:         "binance",
+		Exchange:         "onebullex",
 		MarketType:       "perpetual",
 		Symbol:           "btcusdt",
 		PositionSide:     "long",
@@ -51,7 +51,7 @@ func TestSQLiteRepositorySnapshots(t *testing.T) {
 	}
 	if _, err := repo.SaveMarginSnapshot(ctx, MarginSnapshot{
 		AccountID:        "research",
-		Exchange:         "binance",
+		Exchange:         "onebullex",
 		MarketType:       "perpetual",
 		Equity:           1000,
 		MarginBalance:    1000,
@@ -81,7 +81,7 @@ func TestSQLiteRepositoryPositionSnapshotsKeepMarketTypesSeparate(t *testing.T) 
 	for _, snapshot := range []PositionSnapshot{
 		{
 			AccountID:    "paper",
-			Exchange:     "binance",
+			Exchange:     "onebullex",
 			MarketType:   "spot",
 			Symbol:       "btcusdt",
 			PositionSide: "short",
@@ -92,7 +92,7 @@ func TestSQLiteRepositoryPositionSnapshotsKeepMarketTypesSeparate(t *testing.T) 
 		},
 		{
 			AccountID:     "paper",
-			Exchange:      "binance",
+			Exchange:      "onebullex",
 			MarketType:    "perpetual",
 			Symbol:        "btcusdt",
 			PositionSide:  "short",
@@ -113,7 +113,7 @@ func TestSQLiteRepositoryPositionSnapshotsKeepMarketTypesSeparate(t *testing.T) 
 	if err := db.QueryRowContext(ctx, `
 SELECT COUNT(*)
 FROM positions
-WHERE account_id = 'paper' AND exchange = 'binance' AND symbol = 'BTCUSDT'
+WHERE account_id = 'paper' AND exchange = 'onebullex' AND symbol = 'BTCUSDT'
 	AND position_side = 'short' AND snapshot_time = ?;
 `, now).Scan(&count); err != nil {
 		t.Fatalf("count positions: %v", err)
@@ -142,7 +142,7 @@ func TestSQLiteRepositoryPaperPositionLifecycle(t *testing.T) {
 	id, err := repo.OpenPaperPosition(ctx, PaperPositionRecord{
 		AccountID:       "paper",
 		StrategyID:      "scalp-tpsl-paper",
-		Exchange:        "binance",
+		Exchange:        "onebullex",
 		MarketType:      "spot",
 		Symbol:          "btcusdt",
 		PositionSide:    "long",
@@ -160,7 +160,7 @@ func TestSQLiteRepositoryPaperPositionLifecycle(t *testing.T) {
 		t.Fatal("id = 0, want inserted id")
 	}
 
-	position, err := repo.LatestOpenPaperPosition(ctx, "paper", "scalp-tpsl-paper", "binance", "spot", "BTCUSDT")
+	position, err := repo.LatestOpenPaperPosition(ctx, "paper", "scalp-tpsl-paper", "onebullex", "spot", "BTCUSDT")
 	if err != nil {
 		t.Fatalf("latest open position: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestSQLiteRepositoryClosePaperPositionWithRealizedPnL(t *testing.T) {
 	id, err := repo.OpenPaperPosition(ctx, PaperPositionRecord{
 		AccountID:       "paper",
 		StrategyID:      "scalp-tpsl-perp-paper",
-		Exchange:        "binance",
+		Exchange:        "onebullex",
 		MarketType:      "perpetual",
 		Symbol:          "BTCUSDT",
 		PositionSide:    "short",
@@ -248,7 +248,7 @@ func TestSQLiteRepositorySumClosedPaperPositionRealizedPnL(t *testing.T) {
 	firstID, err := repo.OpenPaperPosition(ctx, PaperPositionRecord{
 		AccountID:    "paper-v2",
 		StrategyID:   "scalp-tpsl-perp-v2-paper",
-		Exchange:     "binance",
+		Exchange:     "onebullex",
 		MarketType:   "perpetual",
 		Symbol:       "BTCUSDT",
 		PositionSide: "long",
@@ -266,7 +266,7 @@ func TestSQLiteRepositorySumClosedPaperPositionRealizedPnL(t *testing.T) {
 	secondID, err := repo.OpenPaperPosition(ctx, PaperPositionRecord{
 		AccountID:    "paper-v2",
 		StrategyID:   "scalp-tpsl-perp-v2-paper",
-		Exchange:     "binance",
+		Exchange:     "onebullex",
 		MarketType:   "perpetual",
 		Symbol:       "BTCUSDT",
 		PositionSide: "short",
@@ -284,7 +284,7 @@ func TestSQLiteRepositorySumClosedPaperPositionRealizedPnL(t *testing.T) {
 	if _, err := repo.OpenPaperPosition(ctx, PaperPositionRecord{
 		AccountID:    "paper-v2",
 		StrategyID:   "scalp-tpsl-perp-v2-paper",
-		Exchange:     "binance",
+		Exchange:     "onebullex",
 		MarketType:   "perpetual",
 		Symbol:       "BTCUSDT",
 		PositionSide: "long",
@@ -296,7 +296,7 @@ func TestSQLiteRepositorySumClosedPaperPositionRealizedPnL(t *testing.T) {
 		t.Fatalf("open live paper position: %v", err)
 	}
 
-	total, err := repo.SumClosedPaperPositionRealizedPnL(ctx, "paper-v2", "scalp-tpsl-perp-v2-paper", "binance", "perpetual", "BTCUSDT")
+	total, err := repo.SumClosedPaperPositionRealizedPnL(ctx, "paper-v2", "scalp-tpsl-perp-v2-paper", "onebullex", "perpetual", "BTCUSDT")
 	if err != nil {
 		t.Fatalf("sum realized pnl: %v", err)
 	}

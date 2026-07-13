@@ -72,10 +72,10 @@ func (s *Server) favicon(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	query := dashboardQuery{
-		Exchange:   firstNonEmpty(r.URL.Query().Get("exchange"), "binance"),
+		Exchange:   firstNonEmpty(r.URL.Query().Get("exchange"), "onebullex"),
 		MarketType: firstNonEmpty(r.URL.Query().Get("market"), "perpetual"),
 		Symbol:     strings.ToUpper(firstNonEmpty(r.URL.Query().Get("symbol"), "BTCUSDT")),
-		Interval:   firstNonEmpty(r.URL.Query().Get("interval"), "1m"),
+		Interval:   firstNonEmpty(r.URL.Query().Get("interval"), "5m"),
 		Limit:      parseLimit(r.URL.Query().Get("limit"), 240, 1000),
 	}
 
@@ -211,6 +211,8 @@ type OrderRecord struct {
 	Symbol          string    `json:"symbol"`
 	Side            string    `json:"side"`
 	OrderType       string    `json:"order_type"`
+	ExchangeOrderID string    `json:"exchange_order_id"`
+	ExchangeStatus  string    `json:"exchange_status"`
 	ReduceOnly      bool      `json:"reduce_only"`
 	Price           float64   `json:"price"`
 	Quantity        float64   `json:"quantity"`
@@ -427,7 +429,7 @@ func (s *Server) collect(ctx context.Context, query dashboardQuery) (Data, error
 		}
 	}
 	if len(data.Balances) == 0 && len(data.Positions) == 0 && len(data.Margins) == 0 {
-		data.Warnings = append(data.Warnings, "真实交易所账户私有 API 尚未接入；paper 为本地模拟账户，已隐藏 research/demo/test/manual 等手工演示快照")
+		data.Warnings = append(data.Warnings, "暂无账户/持仓快照；运行 accountsnapshot -sync-live 可从 OneBullEx 只读同步真实余额和持仓")
 	}
 	return data, nil
 }
@@ -682,7 +684,8 @@ LIMIT 12;
 func (s *Server) loadOrders(ctx context.Context, query dashboardQuery) ([]OrderRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, account_id, strategy_id, exchange, market_type, symbol, side, order_type,
-	reduce_only, price, quantity, stop_price, take_profit_price, status, risk_decision, risk_reason, created_at
+	exchange_order_id, exchange_status, reduce_only, price, quantity, stop_price,
+	take_profit_price, status, risk_decision, risk_reason, created_at
 FROM orders
 WHERE NOT `+demoAccountPredicate("account_id")+`
 	AND exchange = ? AND market_type = ? AND symbol = ?
@@ -698,7 +701,7 @@ LIMIT 12;
 	for rows.Next() {
 		var record OrderRecord
 		var reduceOnly int
-		if err := rows.Scan(&record.ID, &record.AccountID, &record.StrategyID, &record.Exchange, &record.MarketType, &record.Symbol, &record.Side, &record.OrderType, &reduceOnly, &record.Price, &record.Quantity, &record.StopPrice, &record.TakeProfitPrice, &record.Status, &record.RiskDecision, &record.RiskReason, &record.CreatedAt); err != nil {
+		if err := rows.Scan(&record.ID, &record.AccountID, &record.StrategyID, &record.Exchange, &record.MarketType, &record.Symbol, &record.Side, &record.OrderType, &record.ExchangeOrderID, &record.ExchangeStatus, &reduceOnly, &record.Price, &record.Quantity, &record.StopPrice, &record.TakeProfitPrice, &record.Status, &record.RiskDecision, &record.RiskReason, &record.CreatedAt); err != nil {
 			return nil, err
 		}
 		record.ReduceOnly = reduceOnly == 1
@@ -773,16 +776,6 @@ WITH latest_mark AS (
 	)
 	WHERE rn = 1
 ),
-latest_spot AS (
-	SELECT exchange, symbol, open_time, close_price
-	FROM (
-		SELECT exchange, symbol, open_time, close_price,
-			ROW_NUMBER() OVER (PARTITION BY exchange, symbol ORDER BY open_time DESC, id DESC) AS rn
-		FROM candles
-		WHERE market_type = 'spot'
-	)
-	WHERE rn = 1
-),
 latest_positions AS (
 	SELECT account_id, exchange, market_type, symbol, position_side, quantity, entry_price,
 		mark_price, liquidation_price, leverage, margin_mode, unrealized_pnl, notional,
@@ -797,10 +790,9 @@ latest_positions AS (
 )
 SELECT p.account_id, p.exchange, p.market_type, p.symbol, p.position_side, p.quantity, p.entry_price,
 	p.mark_price, p.liquidation_price, p.leverage, p.margin_mode, p.unrealized_pnl, p.notional,
-	p.liquidation_distance_pct, p.snapshot_time, lm.mark_price, lm.event_time, ls.close_price, ls.open_time
+	p.liquidation_distance_pct, p.snapshot_time, lm.mark_price, lm.event_time
 FROM latest_positions p
 LEFT JOIN latest_mark lm ON lm.exchange = p.exchange AND lm.symbol = p.symbol
-LEFT JOIN latest_spot ls ON ls.exchange = p.exchange AND ls.symbol = p.symbol
 WHERE p.rn = 1 AND p.quantity != 0
 	AND p.exchange = ? AND p.market_type = ? AND p.symbol = ?
 ORDER BY p.snapshot_time DESC
@@ -816,37 +808,25 @@ LIMIT 12;
 		var record PositionSnapshot
 		var latestMarkRaw sql.NullString
 		var latestMarkTime sql.NullTime
-		var latestSpotCloseRaw sql.NullString
-		var latestSpotTime sql.NullTime
-		if err := rows.Scan(&record.AccountID, &record.Exchange, &record.MarketType, &record.Symbol, &record.PositionSide, &record.Quantity, &record.EntryPrice, &record.MarkPrice, &record.LiquidationPrice, &record.Leverage, &record.MarginMode, &record.UnrealizedPnL, &record.Notional, &record.LiquidationDistancePct, &record.SnapshotTime, &latestMarkRaw, &latestMarkTime, &latestSpotCloseRaw, &latestSpotTime); err != nil {
+		if err := rows.Scan(&record.AccountID, &record.Exchange, &record.MarketType, &record.Symbol, &record.PositionSide, &record.Quantity, &record.EntryPrice, &record.MarkPrice, &record.LiquidationPrice, &record.Leverage, &record.MarginMode, &record.UnrealizedPnL, &record.Notional, &record.LiquidationDistancePct, &record.SnapshotTime, &latestMarkRaw, &latestMarkTime); err != nil {
 			return nil, err
 		}
-		applyLatestPositionPrice(&record, latestMarkRaw, latestMarkTime, latestSpotCloseRaw, latestSpotTime)
+		applyLatestPositionPrice(&record, latestMarkRaw, latestMarkTime)
 		records = append(records, record)
 	}
 	return records, rows.Err()
 }
 
-func applyLatestPositionPrice(record *PositionSnapshot, latestMarkRaw sql.NullString, latestMarkTime sql.NullTime, latestSpotCloseRaw sql.NullString, latestSpotTime sql.NullTime) {
+func applyLatestPositionPrice(record *PositionSnapshot, latestMarkRaw sql.NullString, latestMarkTime sql.NullTime) {
 	record.MarkPriceSource = "position_snapshot"
 	record.MarkPriceTime = record.SnapshotTime
 	record.SnapshotStale = time.Since(record.SnapshotTime) > 5*time.Minute
 
-	if strings.EqualFold(record.MarketType, "spot") && latestSpotCloseRaw.Valid && latestSpotTime.Valid {
-		if latestSpotClose := parseFloat(latestSpotCloseRaw.String); latestSpotClose > 0 {
-			record.MarkPrice = latestSpotClose
-			record.MarkPriceTime = latestSpotTime.Time.UTC()
-			record.MarkPriceSource = "latest_spot_close"
-		}
-	}
-
 	if latestMarkRaw.Valid && latestMarkTime.Valid {
 		if latestMarkPrice := parseFloat(latestMarkRaw.String); latestMarkPrice > 0 {
-			if !strings.EqualFold(record.MarketType, "spot") || record.MarkPriceSource == "position_snapshot" {
-				record.MarkPrice = latestMarkPrice
-				record.MarkPriceTime = latestMarkTime.Time.UTC()
-				record.MarkPriceSource = "latest_mark_price"
-			}
+			record.MarkPrice = latestMarkPrice
+			record.MarkPriceTime = latestMarkTime.Time.UTC()
+			record.MarkPriceSource = "latest_mark_price"
 		}
 	}
 
@@ -1074,7 +1054,6 @@ func allowedTables() map[string]struct{} {
 		"contract_specs":        {},
 		"funding_rates":         {},
 		"index_prices":          {},
-		"items":                 {},
 		"leverage_brackets":     {},
 		"margin_snapshots":      {},
 		"mark_prices":           {},

@@ -23,6 +23,13 @@ type ScalpTPSLConfig struct {
 	SlowWindow           int
 	TakeProfitPct        float64
 	StopLossPct          float64
+	DynamicTPSL          bool
+	TakeProfitATRMult    float64
+	StopLossATRMult      float64
+	MinTakeProfitPct     float64
+	MaxTakeProfitPct     float64
+	MinStopLossPct       float64
+	MaxStopLossPct       float64
 	CooldownBars         int
 	FeeRate              float64
 	SlippageRate         float64
@@ -185,7 +192,7 @@ func RunScalpTPSL(candles []marketdata.Candle, config ScalpTPSLConfig) (Result, 
 	if err != nil {
 		return Result{}, err
 	}
-	highs, lows, volumes, err := scalpFilterSeries(candles, config)
+	highs, lows, volumes, err := scalpFilterSeries(candles, config, true)
 	if err != nil {
 		return Result{}, err
 	}
@@ -197,6 +204,8 @@ func RunScalpTPSL(candles []marketdata.Candle, config ScalpTPSLConfig) (Result, 
 	positionSide := "long"
 	entryPrice := 0.0
 	entryTime := time.Time{}
+	takeProfitPrice := 0.0
+	stopLossPrice := 0.0
 	cooldownUntil := -1
 	trades := make([]Trade, 0)
 	costRate := config.FeeRate + config.SlippageRate
@@ -230,6 +239,8 @@ func RunScalpTPSL(candles []marketdata.Candle, config ScalpTPSLConfig) (Result, 
 		positionSide = "long"
 		entryPrice = 0
 		entryTime = time.Time{}
+		takeProfitPrice = 0
+		stopLossPrice = 0
 		cooldownUntil = index + config.CooldownBars
 		updateDrawdown()
 	}
@@ -237,34 +248,27 @@ func RunScalpTPSL(candles []marketdata.Candle, config ScalpTPSLConfig) (Result, 
 	for i := config.SlowWindow; i < len(candles)-1; i++ {
 		fast := sma(closes, i, config.FastWindow)
 		slow := sma(closes, i, config.SlowWindow)
-		currentPrice := closes[i]
 		nextPrice := closes[i+1]
 
 		if inPosition {
 			if positionSide == "short" {
-				takeProfitPrice := entryPrice * (1 - config.TakeProfitPct/100)
-				stopLossPrice := entryPrice * (1 + config.StopLossPct/100)
+				// For a short position, profit is taken below entry and stop loss is above entry.
+				if exitPrice, ok := scalpIntrabarExitPrice(positionSide, takeProfitPrice, stopLossPrice, highs[i], lows[i]); ok {
+					closePosition(i, exitPrice)
+					continue
+				}
 				switch {
-				case currentPrice <= takeProfitPrice:
-					closePosition(i, currentPrice)
-					continue
-				case currentPrice >= stopLossPrice:
-					closePosition(i, currentPrice)
-					continue
 				case fast > slow:
 					closePosition(i+1, nextPrice)
 					continue
 				}
 			} else {
-				takeProfitPrice := entryPrice * (1 + config.TakeProfitPct/100)
-				stopLossPrice := entryPrice * (1 - config.StopLossPct/100)
+				// For a long position, profit is taken above entry and stop loss is below entry.
+				if exitPrice, ok := scalpIntrabarExitPrice(positionSide, takeProfitPrice, stopLossPrice, highs[i], lows[i]); ok {
+					closePosition(i, exitPrice)
+					continue
+				}
 				switch {
-				case currentPrice >= takeProfitPrice:
-					closePosition(i, currentPrice)
-					continue
-				case currentPrice <= stopLossPrice:
-					closePosition(i, currentPrice)
-					continue
 				case fast < slow:
 					closePosition(i+1, nextPrice)
 					continue
@@ -275,18 +279,30 @@ func RunScalpTPSL(candles []marketdata.Candle, config ScalpTPSLConfig) (Result, 
 		if !inPosition && i >= cooldownUntil {
 			switch scalpSignalAt(closes, highs, lows, volumes, i, config) {
 			case "long":
+				tpPct, slPct, ok := scalpTPSLPercents(closes, highs, lows, i, config)
+				if !ok {
+					continue
+				}
 				inPosition = true
 				positionSide = "long"
 				entryPrice = nextPrice
 				entryTime = candles[i+1].OpenTime
+				takeProfitPrice = entryPrice * (1 + tpPct/100)
+				stopLossPrice = entryPrice * (1 - slPct/100)
 				equity *= 1 - costRate
 				updateDrawdown()
 				continue
 			case "short":
+				tpPct, slPct, ok := scalpTPSLPercents(closes, highs, lows, i, config)
+				if !ok {
+					continue
+				}
 				inPosition = true
 				positionSide = "short"
 				entryPrice = nextPrice
 				entryTime = candles[i+1].OpenTime
+				takeProfitPrice = entryPrice * (1 - tpPct/100)
+				stopLossPrice = entryPrice * (1 + slPct/100)
 				equity *= 1 - costRate
 				updateDrawdown()
 				continue
@@ -334,7 +350,7 @@ func LatestScalpTPSLSignal(candles []marketdata.Candle, config ScalpTPSLConfig) 
 	if err != nil {
 		return "", false, err
 	}
-	highs, lows, volumes, err := scalpFilterSeries(candles, config)
+	highs, lows, volumes, err := scalpFilterSeries(candles, config, false)
 	if err != nil {
 		return "", false, err
 	}
@@ -345,6 +361,26 @@ func LatestScalpTPSLSignal(candles []marketdata.Candle, config ScalpTPSLConfig) 
 	return side, true, nil
 }
 
+func LatestScalpTPSLPercents(candles []marketdata.Candle, config ScalpTPSLConfig) (float64, float64, bool, error) {
+	config, err := normalizeScalpTPSLConfig(config)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	if len(candles) < config.SlowWindow+1 {
+		return 0, 0, false, ErrNotEnoughData
+	}
+	closes, err := closePrices(candles)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	highs, lows, _, err := scalpFilterSeries(candles, config, true)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	takeProfitPct, stopLossPct, ok := scalpTPSLPercents(closes, highs, lows, len(closes)-1, config)
+	return takeProfitPct, stopLossPct, ok, nil
+}
+
 func normalizeScalpTPSLConfig(config ScalpTPSLConfig) (ScalpTPSLConfig, error) {
 	if config.FastWindow == 0 {
 		config.FastWindow = 3
@@ -353,16 +389,33 @@ func normalizeScalpTPSLConfig(config ScalpTPSLConfig) (ScalpTPSLConfig, error) {
 		config.SlowWindow = 9
 	}
 	if config.TakeProfitPct == 0 {
-		config.TakeProfitPct = 0.8
+		config.TakeProfitPct = 0.80
 	}
 	if config.StopLossPct == 0 {
-		config.StopLossPct = 0.4
+		config.StopLossPct = 0.45
 	}
 	if config.ConfirmBars == 0 {
 		config.ConfirmBars = 1
 	}
 	if config.ATRWindow == 0 && (config.MinATRPct > 0 || config.MaxATRPct > 0) {
 		config.ATRWindow = 14
+	}
+	if config.DynamicTPSL {
+		if config.ATRWindow == 0 {
+			config.ATRWindow = 14
+		}
+		if config.TakeProfitATRMult == 0 {
+			config.TakeProfitATRMult = 1.6
+		}
+		if config.StopLossATRMult == 0 {
+			config.StopLossATRMult = 1.0
+		}
+		if config.MinTakeProfitPct == 0 {
+			config.MinTakeProfitPct = config.TakeProfitPct
+		}
+		if config.MinStopLossPct == 0 {
+			config.MinStopLossPct = config.StopLossPct
+		}
 	}
 	if config.VolumeWindow == 0 && config.MinVolumeRatio > 0 {
 		config.VolumeWindow = 20
@@ -381,6 +434,22 @@ func normalizeScalpTPSLConfig(config ScalpTPSLConfig) (ScalpTPSLConfig, error) {
 		return ScalpTPSLConfig{}, errors.New("take profit pct must be positive")
 	case config.StopLossPct <= 0:
 		return ScalpTPSLConfig{}, errors.New("stop loss pct must be positive")
+	case config.DynamicTPSL && config.TakeProfitATRMult <= 0:
+		return ScalpTPSLConfig{}, errors.New("take profit atr multiplier must be positive")
+	case config.DynamicTPSL && config.StopLossATRMult <= 0:
+		return ScalpTPSLConfig{}, errors.New("stop loss atr multiplier must be positive")
+	case config.MinTakeProfitPct < 0:
+		return ScalpTPSLConfig{}, errors.New("min take profit pct cannot be negative")
+	case config.MaxTakeProfitPct < 0:
+		return ScalpTPSLConfig{}, errors.New("max take profit pct cannot be negative")
+	case config.MaxTakeProfitPct > 0 && config.MinTakeProfitPct > 0 && config.MaxTakeProfitPct < config.MinTakeProfitPct:
+		return ScalpTPSLConfig{}, errors.New("max take profit pct must be greater than min take profit pct")
+	case config.MinStopLossPct < 0:
+		return ScalpTPSLConfig{}, errors.New("min stop loss pct cannot be negative")
+	case config.MaxStopLossPct < 0:
+		return ScalpTPSLConfig{}, errors.New("max stop loss pct cannot be negative")
+	case config.MaxStopLossPct > 0 && config.MinStopLossPct > 0 && config.MaxStopLossPct < config.MinStopLossPct:
+		return ScalpTPSLConfig{}, errors.New("max stop loss pct must be greater than min stop loss pct")
 	case config.FeeRate < 0:
 		return ScalpTPSLConfig{}, errors.New("fee rate cannot be negative")
 	case config.SlippageRate < 0:
@@ -413,6 +482,9 @@ func normalizeScalpTPSLConfig(config ScalpTPSLConfig) (ScalpTPSLConfig, error) {
 
 func scalpStrategyName(config ScalpTPSLConfig) string {
 	name := fmt.Sprintf("scalp_tpsl_%d_%d_tp%.2f_sl%.2f", config.FastWindow, config.SlowWindow, config.TakeProfitPct, config.StopLossPct)
+	if config.DynamicTPSL {
+		name += fmt.Sprintf("_atr_tp%.2fx_sl%.2fx", config.TakeProfitATRMult, config.StopLossATRMult)
+	}
 	if config.MinTrendSpreadPct > 0 || config.ConfirmBars > 1 || config.MinATRPct > 0 || config.MaxATRPct > 0 || config.MinVolumeRatio > 0 || config.MaxEntryExtensionPct > 0 || config.PullbackLookback > 0 {
 		name += "_filtered"
 	}
@@ -471,6 +543,53 @@ func scalpSignalAt(closes []float64, highs []float64, lows []float64, volumes []
 	return ""
 }
 
+func scalpIntrabarExitPrice(positionSide string, takeProfitPrice float64, stopLossPrice float64, high float64, low float64) (float64, bool) {
+	if positionSide == "short" {
+		takeProfitHit := low <= takeProfitPrice
+		stopLossHit := high >= stopLossPrice
+		if stopLossHit {
+			return stopLossPrice, true
+		}
+		if takeProfitHit {
+			return takeProfitPrice, true
+		}
+		return 0, false
+	}
+	takeProfitHit := high >= takeProfitPrice
+	stopLossHit := low <= stopLossPrice
+	if stopLossHit {
+		return stopLossPrice, true
+	}
+	if takeProfitHit {
+		return takeProfitPrice, true
+	}
+	return 0, false
+}
+
+func scalpTPSLPercents(closes []float64, highs []float64, lows []float64, index int, config ScalpTPSLConfig) (float64, float64, bool) {
+	takeProfitPct := config.TakeProfitPct
+	stopLossPct := config.StopLossPct
+	if config.DynamicTPSL {
+		atrPct, ok := atrPercent(closes, highs, lows, index, config.ATRWindow)
+		if !ok {
+			return 0, 0, false
+		}
+		takeProfitPct = clampPositive(atrPct*config.TakeProfitATRMult, config.MinTakeProfitPct, config.MaxTakeProfitPct)
+		stopLossPct = clampPositive(atrPct*config.StopLossATRMult, config.MinStopLossPct, config.MaxStopLossPct)
+	}
+	return takeProfitPct, stopLossPct, true
+}
+
+func clampPositive(value float64, minValue float64, maxValue float64) float64 {
+	if minValue > 0 && value < minValue {
+		value = minValue
+	}
+	if maxValue > 0 && value > maxValue {
+		value = maxValue
+	}
+	return value
+}
+
 func confirmedDirection(closes []float64, index int, bars int, direction int) bool {
 	if bars <= 0 {
 		bars = 1
@@ -491,11 +610,11 @@ func confirmedDirection(closes []float64, index int, bars int, direction int) bo
 	return true
 }
 
-func scalpFilterSeries(candles []marketdata.Candle, config ScalpTPSLConfig) ([]float64, []float64, []float64, error) {
+func scalpFilterSeries(candles []marketdata.Candle, config ScalpTPSLConfig, requireRange bool) ([]float64, []float64, []float64, error) {
 	var highs []float64
 	var lows []float64
 	var volumes []float64
-	if scalpUsesRangeData(config) {
+	if requireRange || scalpUsesRangeData(config) {
 		highs = make([]float64, 0, len(candles))
 		lows = make([]float64, 0, len(candles))
 		for _, candle := range candles {
@@ -528,7 +647,7 @@ func scalpFilterSeries(candles []marketdata.Candle, config ScalpTPSLConfig) ([]f
 }
 
 func scalpUsesRangeData(config ScalpTPSLConfig) bool {
-	return scalpUsesATR(config) || scalpUsesPullback(config)
+	return config.DynamicTPSL || scalpUsesATR(config) || scalpUsesPullback(config)
 }
 
 func scalpUsesATR(config ScalpTPSLConfig) bool {

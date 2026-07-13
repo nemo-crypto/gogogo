@@ -16,7 +16,7 @@ func TestCheckCandleCoverageFindsGaps(t *testing.T) {
 	}
 
 	coverage, err := CheckCandleCoverage(candles, CandleQuery{
-		Exchange:   "binance",
+		Exchange:   "onebullex",
 		MarketType: MarketTypeSpot,
 		Symbol:     "BTCUSDT",
 		Interval:   "1h",
@@ -75,7 +75,7 @@ func TestCandleDataHashIsDeterministic(t *testing.T) {
 
 func testCandleAt(openTime time.Time) Candle {
 	return Candle{
-		Exchange:    "binance",
+		Exchange:    "onebullex",
 		MarketType:  MarketTypeSpot,
 		Symbol:      "BTCUSDT",
 		Interval:    "1h",
@@ -88,6 +88,6 @@ func testCandleAt(openTime time.Time) Candle {
 		Volume:      "10.00",
 		QuoteVolume: "1050.00",
 		TradeCount:  100,
-		Source:      "binance",
+		Source:      "onebullex",
 	}
 }

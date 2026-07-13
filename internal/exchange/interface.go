@@ -40,16 +40,20 @@ type Position struct {
 }
 
 type OrderRequest struct {
-	AccountID     string
-	MarketType    marketdata.MarketType
-	Symbol        string
-	ClientOrderID string
-	Side          string
-	OrderType     string
-	TimeInForce   string
-	ReduceOnly    bool
-	Price         string
-	Quantity      string
+	AccountID          string
+	MarketType         marketdata.MarketType
+	Symbol             string
+	ClientOrderID      string
+	Side               string
+	OrderType          string
+	TimeInForce        string
+	ReduceOnly         bool
+	Price              string
+	Quantity           string
+	TriggerProfitPrice string
+	TriggerStopPrice   string
+	ProfitOrderType    string
+	StopOrderType      string
 }
 
 type OrderStatus struct {

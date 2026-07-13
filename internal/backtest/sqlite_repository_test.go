@@ -24,7 +24,7 @@ func TestSQLiteRepositorySaveRun(t *testing.T) {
 
 	repo := NewSQLiteRepository(db)
 	id, err := repo.SaveRun(ctx, SaveRunRequest{
-		Exchange:   "binance",
+		Exchange:   "onebullex",
 		MarketType: "spot",
 		Config: SMAConfig{
 			FastWindow: 2,
