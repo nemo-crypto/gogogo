@@ -19,14 +19,21 @@ type SMAConfig struct {
 }
 
 type ScalpTPSLConfig struct {
-	FastWindow    int
-	SlowWindow    int
-	TakeProfitPct float64
-	StopLossPct   float64
-	CooldownBars  int
-	FeeRate       float64
-	SlippageRate  float64
-	AllowShort    bool
+	FastWindow        int
+	SlowWindow        int
+	TakeProfitPct     float64
+	StopLossPct       float64
+	CooldownBars      int
+	FeeRate           float64
+	SlippageRate      float64
+	AllowShort        bool
+	MinTrendSpreadPct float64
+	ConfirmBars       int
+	ATRWindow         int
+	MinATRPct         float64
+	MaxATRPct         float64
+	VolumeWindow      int
+	MinVolumeRatio    float64
 }
 
 type Trade struct {
@@ -175,6 +182,10 @@ func RunScalpTPSL(candles []marketdata.Candle, config ScalpTPSLConfig) (Result, 
 	if err != nil {
 		return Result{}, err
 	}
+	highs, lows, volumes, err := scalpFilterSeries(candles, config)
+	if err != nil {
+		return Result{}, err
+	}
 
 	equity := 1.0
 	peak := equity
@@ -258,23 +269,25 @@ func RunScalpTPSL(candles []marketdata.Candle, config ScalpTPSLConfig) (Result, 
 			}
 		}
 
-		if !inPosition && i >= cooldownUntil && fast > slow && closes[i] > closes[i-1] {
-			inPosition = true
-			positionSide = "long"
-			entryPrice = nextPrice
-			entryTime = candles[i+1].OpenTime
-			equity *= 1 - costRate
-			updateDrawdown()
-			continue
-		}
-		if !inPosition && config.AllowShort && i >= cooldownUntil && fast < slow && closes[i] < closes[i-1] {
-			inPosition = true
-			positionSide = "short"
-			entryPrice = nextPrice
-			entryTime = candles[i+1].OpenTime
-			equity *= 1 - costRate
-			updateDrawdown()
-			continue
+		if !inPosition && i >= cooldownUntil {
+			switch scalpSignalAt(closes, highs, lows, volumes, i, config) {
+			case "long":
+				inPosition = true
+				positionSide = "long"
+				entryPrice = nextPrice
+				entryTime = candles[i+1].OpenTime
+				equity *= 1 - costRate
+				updateDrawdown()
+				continue
+			case "short":
+				inPosition = true
+				positionSide = "short"
+				entryPrice = nextPrice
+				entryTime = candles[i+1].OpenTime
+				equity *= 1 - costRate
+				updateDrawdown()
+				continue
+			}
 		}
 
 		updateDrawdown()
@@ -290,7 +303,7 @@ func RunScalpTPSL(candles []marketdata.Candle, config ScalpTPSLConfig) (Result, 
 	buyHoldReturn := (closes[len(closes)-1] - closes[0]) / closes[0] * 100
 	totalReturn := (equity - 1) * 100
 	return Result{
-		StrategyName:     fmt.Sprintf("scalp_tpsl_%d_%d_tp%.2f_sl%.2f", config.FastWindow, config.SlowWindow, config.TakeProfitPct, config.StopLossPct),
+		StrategyName:     scalpStrategyName(config),
 		Symbol:           candles[0].Symbol,
 		Interval:         candles[0].Interval,
 		Start:            candles[0].OpenTime,
@@ -306,6 +319,29 @@ func RunScalpTPSL(candles []marketdata.Candle, config ScalpTPSLConfig) (Result, 
 	}, nil
 }
 
+func LatestScalpTPSLSignal(candles []marketdata.Candle, config ScalpTPSLConfig) (string, bool, error) {
+	config, err := normalizeScalpTPSLConfig(config)
+	if err != nil {
+		return "", false, err
+	}
+	if len(candles) < config.SlowWindow+1 {
+		return "", false, ErrNotEnoughData
+	}
+	closes, err := closePrices(candles)
+	if err != nil {
+		return "", false, err
+	}
+	highs, lows, volumes, err := scalpFilterSeries(candles, config)
+	if err != nil {
+		return "", false, err
+	}
+	side := scalpSignalAt(closes, highs, lows, volumes, len(closes)-1, config)
+	if side == "" {
+		return "", false, nil
+	}
+	return side, true, nil
+}
+
 func normalizeScalpTPSLConfig(config ScalpTPSLConfig) (ScalpTPSLConfig, error) {
 	if config.FastWindow == 0 {
 		config.FastWindow = 3
@@ -318,6 +354,15 @@ func normalizeScalpTPSLConfig(config ScalpTPSLConfig) (ScalpTPSLConfig, error) {
 	}
 	if config.StopLossPct == 0 {
 		config.StopLossPct = 0.4
+	}
+	if config.ConfirmBars == 0 {
+		config.ConfirmBars = 1
+	}
+	if config.ATRWindow == 0 && (config.MinATRPct > 0 || config.MaxATRPct > 0) {
+		config.ATRWindow = 14
+	}
+	if config.VolumeWindow == 0 && config.MinVolumeRatio > 0 {
+		config.VolumeWindow = 20
 	}
 	if config.CooldownBars < 0 {
 		return ScalpTPSLConfig{}, errors.New("cooldown bars cannot be negative")
@@ -337,8 +382,185 @@ func normalizeScalpTPSLConfig(config ScalpTPSLConfig) (ScalpTPSLConfig, error) {
 		return ScalpTPSLConfig{}, errors.New("fee rate cannot be negative")
 	case config.SlippageRate < 0:
 		return ScalpTPSLConfig{}, errors.New("slippage rate cannot be negative")
+	case config.MinTrendSpreadPct < 0:
+		return ScalpTPSLConfig{}, errors.New("min trend spread pct cannot be negative")
+	case config.ConfirmBars < 0:
+		return ScalpTPSLConfig{}, errors.New("confirm bars cannot be negative")
+	case config.ATRWindow < 0:
+		return ScalpTPSLConfig{}, errors.New("atr window cannot be negative")
+	case config.MinATRPct < 0:
+		return ScalpTPSLConfig{}, errors.New("min atr pct cannot be negative")
+	case config.MaxATRPct < 0:
+		return ScalpTPSLConfig{}, errors.New("max atr pct cannot be negative")
+	case config.MaxATRPct > 0 && config.MinATRPct > 0 && config.MaxATRPct < config.MinATRPct:
+		return ScalpTPSLConfig{}, errors.New("max atr pct must be greater than min atr pct")
+	case config.VolumeWindow < 0:
+		return ScalpTPSLConfig{}, errors.New("volume window cannot be negative")
+	case config.MinVolumeRatio < 0:
+		return ScalpTPSLConfig{}, errors.New("min volume ratio cannot be negative")
 	}
 	return config, nil
+}
+
+func scalpStrategyName(config ScalpTPSLConfig) string {
+	name := fmt.Sprintf("scalp_tpsl_%d_%d_tp%.2f_sl%.2f", config.FastWindow, config.SlowWindow, config.TakeProfitPct, config.StopLossPct)
+	if config.MinTrendSpreadPct > 0 || config.ConfirmBars > 1 || config.MinATRPct > 0 || config.MaxATRPct > 0 || config.MinVolumeRatio > 0 {
+		name += "_filtered"
+	}
+	return name
+}
+
+func scalpSignalAt(closes []float64, highs []float64, lows []float64, volumes []float64, index int, config ScalpTPSLConfig) string {
+	if index <= 0 || index < config.SlowWindow || index >= len(closes) {
+		return ""
+	}
+	currentPrice := closes[index]
+	fast := sma(closes, index, config.FastWindow)
+	slow := sma(closes, index, config.SlowWindow)
+	if config.MinTrendSpreadPct > 0 {
+		spreadPct := math.Abs(fast-slow) / currentPrice * 100
+		if spreadPct < config.MinTrendSpreadPct {
+			return ""
+		}
+	}
+	if scalpUsesATR(config) {
+		atrPct, ok := atrPercent(closes, highs, lows, index, config.ATRWindow)
+		if !ok {
+			return ""
+		}
+		if config.MinATRPct > 0 && atrPct < config.MinATRPct {
+			return ""
+		}
+		if config.MaxATRPct > 0 && atrPct > config.MaxATRPct {
+			return ""
+		}
+	}
+	if scalpUsesVolume(config) {
+		ratio, ok := volumeRatio(volumes, index, config.VolumeWindow)
+		if !ok || ratio < config.MinVolumeRatio {
+			return ""
+		}
+	}
+	if fast > slow && confirmedDirection(closes, index, config.ConfirmBars, 1) {
+		return "long"
+	}
+	if config.AllowShort && fast < slow && confirmedDirection(closes, index, config.ConfirmBars, -1) {
+		return "short"
+	}
+	return ""
+}
+
+func confirmedDirection(closes []float64, index int, bars int, direction int) bool {
+	if bars <= 0 {
+		bars = 1
+	}
+	if index-bars < 0 {
+		return false
+	}
+	for offset := 0; offset < bars; offset++ {
+		current := closes[index-offset]
+		previous := closes[index-offset-1]
+		if direction > 0 && current <= previous {
+			return false
+		}
+		if direction < 0 && current >= previous {
+			return false
+		}
+	}
+	return true
+}
+
+func scalpFilterSeries(candles []marketdata.Candle, config ScalpTPSLConfig) ([]float64, []float64, []float64, error) {
+	var highs []float64
+	var lows []float64
+	var volumes []float64
+	if scalpUsesATR(config) {
+		highs = make([]float64, 0, len(candles))
+		lows = make([]float64, 0, len(candles))
+		for _, candle := range candles {
+			high, err := parsePositiveCandleField(candle.High, "high", candle)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			low, err := parsePositiveCandleField(candle.Low, "low", candle)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			if low > high {
+				return nil, nil, nil, fmt.Errorf("invalid candle range %s %s", candle.Symbol, candle.OpenTime.Format(time.RFC3339))
+			}
+			highs = append(highs, high)
+			lows = append(lows, low)
+		}
+	}
+	if scalpUsesVolume(config) {
+		volumes = make([]float64, 0, len(candles))
+		for _, candle := range candles {
+			volume, err := parseNonNegativeCandleField(candle.Volume, "volume", candle)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			volumes = append(volumes, volume)
+		}
+	}
+	return highs, lows, volumes, nil
+}
+
+func scalpUsesATR(config ScalpTPSLConfig) bool {
+	return config.ATRWindow > 0 && (config.MinATRPct > 0 || config.MaxATRPct > 0)
+}
+
+func scalpUsesVolume(config ScalpTPSLConfig) bool {
+	return config.VolumeWindow > 0 && config.MinVolumeRatio > 0
+}
+
+func atrPercent(closes []float64, highs []float64, lows []float64, index int, window int) (float64, bool) {
+	if window <= 0 || len(highs) != len(closes) || len(lows) != len(closes) || index-window+1 < 1 {
+		return 0, false
+	}
+	total := 0.0
+	for i := index - window + 1; i <= index; i++ {
+		highLow := highs[i] - lows[i]
+		highPrevClose := math.Abs(highs[i] - closes[i-1])
+		lowPrevClose := math.Abs(lows[i] - closes[i-1])
+		total += math.Max(highLow, math.Max(highPrevClose, lowPrevClose))
+	}
+	atr := total / float64(window)
+	if closes[index] <= 0 {
+		return 0, false
+	}
+	return atr / closes[index] * 100, true
+}
+
+func volumeRatio(volumes []float64, index int, window int) (float64, bool) {
+	if window <= 0 || len(volumes) <= index || index-window < 0 {
+		return 0, false
+	}
+	total := 0.0
+	for i := index - window; i < index; i++ {
+		total += volumes[i]
+	}
+	avg := total / float64(window)
+	if avg <= 0 {
+		return 0, false
+	}
+	return volumes[index] / avg, true
+}
+
+func parsePositiveCandleField(value string, name string, candle marketdata.Candle) (float64, error) {
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil || parsed <= 0 || math.IsNaN(parsed) || math.IsInf(parsed, 0) {
+		return 0, fmt.Errorf("invalid %s %s %s", name, candle.Symbol, candle.OpenTime.Format(time.RFC3339))
+	}
+	return parsed, nil
+}
+
+func parseNonNegativeCandleField(value string, name string, candle marketdata.Candle) (float64, error) {
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil || parsed < 0 || math.IsNaN(parsed) || math.IsInf(parsed, 0) {
+		return 0, fmt.Errorf("invalid %s %s %s", name, candle.Symbol, candle.OpenTime.Format(time.RFC3339))
+	}
+	return parsed, nil
 }
 
 func closePrices(candles []marketdata.Candle) ([]float64, error) {

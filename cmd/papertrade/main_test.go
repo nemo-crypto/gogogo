@@ -109,6 +109,48 @@ func TestPaperPositionNetPnLIncludesRoundTripCosts(t *testing.T) {
 	}
 }
 
+func TestPaperOrderQuantityUsesRiskBudgetAndNotionalCap(t *testing.T) {
+	got, err := paperOrderQuantity(100, 99, paperRunConfig{
+		Equity:         10000,
+		Quantity:       0.01,
+		RiskPct:        0.5,
+		MaxNotionalPct: 20,
+	})
+	if err != nil {
+		t.Fatalf("paper order quantity: %v", err)
+	}
+	want := 20.0
+	if !closeEnough(got, want) {
+		t.Fatalf("quantity = %f, want %f", got, want)
+	}
+
+	got, err = paperOrderQuantity(100, 99, paperRunConfig{
+		Equity:         10000,
+		Quantity:       0.01,
+		RiskPct:        0.5,
+		MaxNotionalPct: 0,
+	})
+	if err != nil {
+		t.Fatalf("paper order quantity without cap: %v", err)
+	}
+	want = 50.0
+	if !closeEnough(got, want) {
+		t.Fatalf("quantity = %f, want %f", got, want)
+	}
+}
+
+func TestPaperOrderQuantityFallsBackToFixedQuantity(t *testing.T) {
+	got, err := paperOrderQuantity(100, 99, paperRunConfig{
+		Quantity: 0.25,
+	})
+	if err != nil {
+		t.Fatalf("paper order quantity: %v", err)
+	}
+	if !closeEnough(got, 0.25) {
+		t.Fatalf("quantity = %f, want 0.25", got)
+	}
+}
+
 func testCandles(start time.Time, prices []string) []marketdata.Candle {
 	candles := make([]marketdata.Candle, 0, len(prices))
 	for i, price := range prices {

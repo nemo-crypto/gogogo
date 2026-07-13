@@ -7,8 +7,11 @@ import (
 )
 
 func Configure(ctx context.Context, db *sql.DB) error {
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+
 	pragmas := []string{
-		"PRAGMA busy_timeout = 10000",
+		"PRAGMA busy_timeout = 30000",
 		"PRAGMA foreign_keys = ON",
 		"PRAGMA journal_mode = WAL",
 		"PRAGMA synchronous = NORMAL",
