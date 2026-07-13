@@ -168,6 +168,8 @@
 - [x] 实现多资产动量轮动策略：已新增 MomentumRotation 研究函数。
 - [x] 实现均值回归策略：已新增 MeanReversionSignal 研究函数。
 - [x] 实现永续合约趋势策略：已完成 perpetual K 线 SMA crossover 基础回测。
+- [x] 标记当前固定策略短板：SMA crossover 缺少明确止盈/止损且交易频次偏低，已在代码中保留 TODO。
+- [ ] 完善短线高频自动化策略：基于 1m/5m K 线、固定 TP/SL、冷却时间、成交量/波动率过滤、手续费滑点和资金费率过滤做连续 paper trading。
 - [x] 实现现货 + 合约对冲策略：已新增 HedgeRatio 研究函数，用于净敞口控制。
 - [x] 实现 walk-forward 验证流程。
 - [x] 输出策略报告：已提供 backtestreport、walkforward、dailyreport；Sharpe/Sortino 等高级指标作为报告增强项保留。

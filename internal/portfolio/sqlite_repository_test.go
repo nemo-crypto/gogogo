@@ -61,3 +61,124 @@ func TestSQLiteRepositorySnapshots(t *testing.T) {
 		t.Fatalf("save margin: %v", err)
 	}
 }
+
+func TestSQLiteRepositoryPositionSnapshotsKeepMarketTypesSeparate(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	db.SetMaxOpenConns(1)
+	if err := InitSQLiteSchema(ctx, db); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	repo := NewSQLiteRepository(db)
+	now := time.Date(2026, 7, 13, 0, 45, 0, 0, time.UTC)
+	for _, snapshot := range []PositionSnapshot{
+		{
+			AccountID:    "paper",
+			Exchange:     "binance",
+			MarketType:   "spot",
+			Symbol:       "btcusdt",
+			PositionSide: "short",
+			Quantity:     0,
+			MarkPrice:    63690,
+			MarginMode:   "paper",
+			SnapshotTime: now,
+		},
+		{
+			AccountID:     "paper",
+			Exchange:      "binance",
+			MarketType:    "perpetual",
+			Symbol:        "btcusdt",
+			PositionSide:  "short",
+			Quantity:      0.01,
+			EntryPrice:    63713.8,
+			MarkPrice:     63664.3,
+			UnrealizedPnL: 0.495,
+			MarginMode:    "paper",
+			SnapshotTime:  now,
+		},
+	} {
+		if _, err := repo.SavePositionSnapshot(ctx, snapshot); err != nil {
+			t.Fatalf("save %s position snapshot: %v", snapshot.MarketType, err)
+		}
+	}
+
+	var count int
+	if err := db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM positions
+WHERE account_id = 'paper' AND exchange = 'binance' AND symbol = 'BTCUSDT'
+	AND position_side = 'short' AND snapshot_time = ?;
+`, now).Scan(&count); err != nil {
+		t.Fatalf("count positions: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("position snapshot count = %d, want 2", count)
+	}
+}
+
+func TestSQLiteRepositoryPaperPositionLifecycle(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	db.SetMaxOpenConns(1)
+	if err := InitSQLiteSchema(ctx, db); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	repo := NewSQLiteRepository(db)
+	openedAt := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
+	id, err := repo.OpenPaperPosition(ctx, PaperPositionRecord{
+		AccountID:       "paper",
+		StrategyID:      "scalp-tpsl-paper",
+		Exchange:        "binance",
+		MarketType:      "spot",
+		Symbol:          "btcusdt",
+		PositionSide:    "long",
+		Quantity:        0.01,
+		EntryPrice:      60000,
+		MarkPrice:       60000,
+		TakeProfitPrice: 60600,
+		StopLossPrice:   59700,
+		OpenedAt:        openedAt,
+	})
+	if err != nil {
+		t.Fatalf("open paper position: %v", err)
+	}
+	if id == 0 {
+		t.Fatal("id = 0, want inserted id")
+	}
+
+	position, err := repo.LatestOpenPaperPosition(ctx, "paper", "scalp-tpsl-paper", "binance", "spot", "BTCUSDT")
+	if err != nil {
+		t.Fatalf("latest open position: %v", err)
+	}
+	if position.Symbol != "BTCUSDT" {
+		t.Fatalf("symbol = %q, want BTCUSDT", position.Symbol)
+	}
+
+	if err := repo.UpdatePaperPositionMark(ctx, id, 60400); err != nil {
+		t.Fatalf("update mark: %v", err)
+	}
+	closed, err := repo.ClosePaperPosition(ctx, id, 60600, openedAt.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("close paper position: %v", err)
+	}
+	if closed.Status != PaperPositionClosed {
+		t.Fatalf("status = %q, want closed", closed.Status)
+	}
+	if closed.RealizedPnL != 6 {
+		t.Fatalf("realized pnl = %.4f, want 6", closed.RealizedPnL)
+	}
+}

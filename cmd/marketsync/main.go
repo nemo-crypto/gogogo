@@ -24,6 +24,8 @@ func main() {
 		start      = flag.String("start", time.Now().UTC().Add(-24*time.Hour).Format(time.RFC3339), "start time in RFC3339")
 		end        = flag.String("end", time.Now().UTC().Format(time.RFC3339), "end time in RFC3339")
 		limit      = flag.Int("limit", 1000, "max klines per symbol, capped at 1000")
+		watch      = flag.Bool("watch", false, "keep polling public market data")
+		pollEvery  = flag.Duration("poll-interval", 15*time.Second, "poll interval when -watch is enabled")
 	)
 	flag.Parse()
 
@@ -52,8 +54,7 @@ func main() {
 		log.Fatal("at least one symbol is required")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx := context.Background()
 
 	db, err := marketdata.OpenSQLite(ctx, *dsn)
 	if err != nil {
@@ -64,28 +65,106 @@ func main() {
 	repo := marketdata.NewSQLiteRepository(db)
 	client := binance.NewClient()
 
+	request := syncBatchRequest{
+		repo:       repo,
+		client:     client,
+		exchange:   *exchange,
+		dataset:    *dataset,
+		marketType: parsedMarketType,
+		marketName: *marketType,
+		symbols:    parsedSymbols,
+		interval:   *interval,
+		start:      startTime,
+		end:        endTime,
+		limit:      *limit,
+		watch:      *watch,
+		pollEvery:  *pollEvery,
+	}
+
+	if request.watch {
+		if err := watchPublicMarketData(ctx, request); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	total, err := syncBatch(ctx, request)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("market sync complete: dataset=%s total_rows=%d dsn=%s", *dataset, total, *dsn)
+}
+
+type syncBatchRequest struct {
+	repo       *marketdata.SQLiteRepository
+	client     *binance.Client
+	exchange   string
+	dataset    string
+	marketType marketdata.MarketType
+	marketName string
+	symbols    []string
+	interval   string
+	start      time.Time
+	end        time.Time
+	limit      int
+	watch      bool
+	pollEvery  time.Duration
+}
+
+func syncBatch(ctx context.Context, request syncBatchRequest) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
 	total := 0
-	for _, symbol := range parsedSymbols {
+	for _, symbol := range request.symbols {
 		count, err := syncSymbol(ctx, syncRequest{
-			repo:       repo,
-			client:     client,
-			exchange:   *exchange,
-			dataset:    *dataset,
-			marketType: parsedMarketType,
-			marketName: *marketType,
+			repo:       request.repo,
+			client:     request.client,
+			exchange:   request.exchange,
+			dataset:    request.dataset,
+			marketType: request.marketType,
+			marketName: request.marketName,
 			symbol:     symbol,
-			interval:   *interval,
-			start:      startTime,
-			end:        endTime,
-			limit:      *limit,
+			interval:   request.interval,
+			start:      request.start,
+			end:        request.end,
+			limit:      request.limit,
 		})
 		if err != nil {
-			log.Fatal(err)
+			return total, err
 		}
 		total += count
 	}
+	return total, nil
+}
 
-	log.Printf("market sync complete: dataset=%s total_rows=%d dsn=%s", *dataset, total, *dsn)
+func watchPublicMarketData(ctx context.Context, request syncBatchRequest) error {
+	if request.pollEvery <= 0 {
+		request.pollEvery = 15 * time.Second
+	}
+	log.Printf("market sync watch started: dataset=%s symbols=%s poll_interval=%s", request.dataset, strings.Join(request.symbols, ","), request.pollEvery)
+
+	for {
+		current := request
+		if isKlineDataset(current.dataset) {
+			current.end = time.Now().UTC()
+			current.start = current.end.Add(-lookbackForInterval(current.interval, current.limit))
+		}
+		total, err := syncBatch(ctx, current)
+		if err != nil {
+			log.Printf("market sync watch error: %v", err)
+		} else {
+			log.Printf("market sync watch tick complete: dataset=%s rows=%d", current.dataset, total)
+		}
+
+		timer := time.NewTimer(request.pollEvery)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 type syncRequest struct {
@@ -248,4 +327,22 @@ func normalizeLimit(limit int) int {
 		return 1000
 	}
 	return limit
+}
+
+func isKlineDataset(dataset string) bool {
+	switch strings.ToLower(strings.TrimSpace(dataset)) {
+	case "klines", "candles":
+		return true
+	default:
+		return false
+	}
+}
+
+func lookbackForInterval(interval string, limit int) time.Duration {
+	limit = normalizeLimit(limit)
+	step, err := marketdata.IntervalDuration(interval)
+	if err != nil {
+		return 24 * time.Hour
+	}
+	return step * time.Duration(limit)
 }

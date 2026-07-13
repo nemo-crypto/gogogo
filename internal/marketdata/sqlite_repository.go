@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"gogogo/internal/sqliteutil"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -25,6 +27,11 @@ func OpenSQLite(ctx context.Context, dsn string) (*sql.DB, error) {
 	}
 
 	if err := db.PingContext(ctx); err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	if err := sqliteutil.Configure(ctx, db); err != nil {
 		db.Close()
 		return nil, err
 	}

@@ -35,6 +35,7 @@ func run() error {
 		price                = flag.Float64("price", 0, "planned order price")
 		quantity             = flag.Float64("quantity", 0, "planned order quantity")
 		stopPrice            = flag.Float64("stop-price", 0, "planned stop price; 0 disables single-order risk check")
+		takeProfitPrice      = flag.Float64("take-profit-price", 0, "planned take profit price; 0 means unset")
 		leverage             = flag.Float64("leverage", 1, "planned leverage, required for perpetual")
 		reduceOnly           = flag.Bool("reduce-only", false, "whether order only reduces existing position")
 		liquidationPrice     = flag.Float64("liquidation-price", 0, "estimated liquidation price for perpetual")
@@ -101,10 +102,11 @@ func run() error {
 			MinLiquidationDistancePct: *minLiqDistancePct,
 			MaxAbsFundingRatePct:      *maxFundingPct,
 		},
-		StrategyID:    *strategyID,
-		ClientOrderID: *clientOrderID,
-		OrderType:     *orderType,
-		TimeInForce:   *timeInForce,
+		StrategyID:      *strategyID,
+		ClientOrderID:   *clientOrderID,
+		OrderType:       *orderType,
+		TimeInForce:     *timeInForce,
+		TakeProfitPrice: *takeProfitPrice,
 	})
 	if err != nil {
 		return err
@@ -117,12 +119,14 @@ func run() error {
 func printResult(result execution.DryRunResult) {
 	fmt.Printf("order_id=%d client_order_id=%s\n", result.Order.ID, result.Order.ClientOrderID)
 	fmt.Printf("status=%s risk_decision=%s risk_reason=%s\n", result.Order.Status, result.Order.RiskDecision, result.Order.RiskReason)
-	fmt.Printf("market=%s symbol=%s side=%s price=%.8f quantity=%.8f reduce_only=%t\n",
+	fmt.Printf("market=%s symbol=%s side=%s price=%.8f quantity=%.8f stop=%.8f take_profit=%.8f reduce_only=%t\n",
 		result.Order.MarketType,
 		result.Order.Symbol,
 		result.Order.Side,
 		result.Order.Price,
 		result.Order.Quantity,
+		result.Order.StopPrice,
+		result.Order.TakeProfitPrice,
 		result.Order.ReduceOnly,
 	)
 	fmt.Printf("order_notional=%.4f order_risk=%.4f total_exposure=%.4f symbol_exposure=%.4f\n",

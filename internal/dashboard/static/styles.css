@@ -379,8 +379,34 @@ th.numeric {
 
 .position-list {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   padding: 14px 16px;
+}
+
+.position-group {
+  display: grid;
+  gap: 10px;
+}
+
+.position-group + .position-group {
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.position-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.position-group-head strong {
+  font-size: 13px;
+}
+
+.position-group-head span {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .row-card {

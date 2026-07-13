@@ -21,6 +21,7 @@
   - `candle_snapshots`
   - `backtest_runs`
   - `orders`
+  - `paper_positions`
   - `risk_events`
   - `balances`
   - `positions`
@@ -157,6 +158,32 @@ go run ./cmd/marketsync \
   -dataset mark-price \
   -market perpetual \
   -symbols BTCUSDT
+```
+
+持续同步公开行情时开启 `-watch`。例如每 15 秒刷新 BTCUSDT 现货 1m K 线：
+
+```bash
+go run ./cmd/marketsync \
+  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -dataset klines \
+  -market spot \
+  -symbols BTCUSDT \
+  -interval 1m \
+  -limit 20 \
+  -watch \
+  -poll-interval 15s
+```
+
+每 15 秒刷新 BTCUSDT 永续合约标记价格：
+
+```bash
+go run ./cmd/marketsync \
+  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -dataset mark-price \
+  -market perpetual \
+  -symbols BTCUSDT \
+  -watch \
+  -poll-interval 15s
 ```
 
 ## 数据质量与快照
@@ -301,7 +328,11 @@ HTTP_ADDR=:8081 DATABASE_DSN=/Users/guilinzhou/Desktop/test-nemo/gogogo/data.db 
 http://localhost:8081
 ```
 
-看板当前读取 `data.db` 中的行情覆盖、价格曲线、回测结果、快照、dry-run 订单、风险事件、账户/仓位/保证金快照、策略信号、paper trading 绩效、资金费率和标记价格。接口为只读：
+看板当前读取 `data.db` 中的行情覆盖、价格曲线、回测结果、dry-run 订单、风险事件、策略信号、paper trading 绩效、资金费率、标记价格、余额和当前持仓。
+
+当前 `paper` 是本地模拟账户：开仓、持仓、止盈止损、盈亏由 `papertrade` 写入；标记价优先使用最新真实 Binance 标记价格。`research`、`demo`、`test`、`manual` 等手工演示账户会被隐藏；历史里旧的 `paper` 手工假仓不会作为当前 paper 持仓展示。真实交易所账户余额和真实持仓仍需接入交易所私有只读账户 API 后写入。
+
+接口为只读：
 
 ```text
 GET /api/dashboard?market=spot&symbol=BTCUSDT&interval=1h
@@ -406,7 +437,9 @@ go run ./cmd/accountsnapshot \
 
 ## Paper Trading
 
-基于已同步的本地 K 线运行 SMA paper trading，并写入 `strategy_runs`、`signals`、`performance_snapshots`。如果最新信号是买入，会额外写入 dry-run 订单审计。
+基于已同步的本地 K 线运行 paper trading，并写入 `backtest_runs`、`strategy_runs`、`signals`、`performance_snapshots`。如果最新信号是买入，会额外写入 dry-run 订单审计和 `paper_positions`；之后每轮用最新真实行情结算当前持仓、未实现盈亏、止盈和止损，并同步更新 `balances`、`positions`、`margin_snapshots`。
+
+默认保留 SMA 基线，也可以切到短线 `scalp-tpsl`。
 
 ```bash
 go run ./cmd/papertrade \
@@ -422,6 +455,51 @@ go run ./cmd/papertrade \
   -slow 48 \
   -equity 10000 \
   -quantity 0.01
+```
+
+短线 TP/SL 版本会用更短均线窗口提高交易频次，并把止盈价、止损价写入 `orders`：
+
+```bash
+go run ./cmd/papertrade \
+  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -account paper \
+  -strategy-type scalp-tpsl \
+  -market spot \
+  -symbol BTCUSDT \
+  -interval 1m \
+  -start 2026-07-11T00:00:00Z \
+  -end 2026-07-12T00:00:00Z \
+  -fast 3 \
+  -slow 9 \
+  -take-profit-pct 0.8 \
+  -stop-loss-pct 0.4 \
+  -cooldown-bars 1 \
+  -equity 10000 \
+  -quantity 0.01
+```
+
+持续运行短线 paper 策略时开启 `-watch`。该模式不会向交易所提交真实订单，只会用真实行情驱动本地模拟下单和结算：
+
+```bash
+go run ./cmd/papertrade \
+  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -account paper \
+  -strategy-type scalp-tpsl \
+  -market spot \
+  -symbol BTCUSDT \
+  -interval 1m \
+  -fast 3 \
+  -slow 9 \
+  -take-profit-pct 0.35 \
+  -stop-loss-pct 0.2 \
+  -cooldown-bars 1 \
+  -fee-rate 0.001 \
+  -slippage-rate 0.0005 \
+  -equity 10000 \
+  -quantity 0.01 \
+  -leverage 1 \
+  -watch \
+  -poll-interval 15s
 ```
 
 ## 每日报告

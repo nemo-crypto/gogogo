@@ -15,36 +15,38 @@ const (
 )
 
 type DryRunRequest struct {
-	Account       risk.AccountSnapshot
-	Order         risk.OrderIntent
-	RiskConfig    risk.Config
-	StrategyID    string
-	ClientOrderID string
-	OrderType     string
-	TimeInForce   string
+	Account         risk.AccountSnapshot
+	Order           risk.OrderIntent
+	RiskConfig      risk.Config
+	StrategyID      string
+	ClientOrderID   string
+	OrderType       string
+	TimeInForce     string
+	TakeProfitPrice float64
 }
 
 type OrderRecord struct {
-	ID            int64
-	AccountID     string
-	StrategyID    string
-	Exchange      string
-	MarketType    risk.MarketType
-	Symbol        string
-	ClientOrderID string
-	Side          risk.Side
-	OrderType     string
-	TimeInForce   string
-	ReduceOnly    bool
-	Price         float64
-	Quantity      float64
-	StopPrice     float64
-	Leverage      float64
-	Status        OrderStatus
-	RiskDecision  risk.Decision
-	RiskReason    string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID              int64
+	AccountID       string
+	StrategyID      string
+	Exchange        string
+	MarketType      risk.MarketType
+	Symbol          string
+	ClientOrderID   string
+	Side            risk.Side
+	OrderType       string
+	TimeInForce     string
+	ReduceOnly      bool
+	Price           float64
+	Quantity        float64
+	StopPrice       float64
+	TakeProfitPrice float64
+	Leverage        float64
+	Status          OrderStatus
+	RiskDecision    risk.Decision
+	RiskReason      string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 type RiskEventRecord struct {

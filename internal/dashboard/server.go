@@ -73,9 +73,9 @@ func (s *Server) favicon(w http.ResponseWriter, r *http.Request) {
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	query := dashboardQuery{
 		Exchange:   firstNonEmpty(r.URL.Query().Get("exchange"), "binance"),
-		MarketType: firstNonEmpty(r.URL.Query().Get("market"), "spot"),
+		MarketType: firstNonEmpty(r.URL.Query().Get("market"), "perpetual"),
 		Symbol:     strings.ToUpper(firstNonEmpty(r.URL.Query().Get("symbol"), "BTCUSDT")),
-		Interval:   firstNonEmpty(r.URL.Query().Get("interval"), "1h"),
+		Interval:   firstNonEmpty(r.URL.Query().Get("interval"), "1m"),
 		Limit:      parseLimit(r.URL.Query().Get("limit"), 240, 1000),
 	}
 
@@ -203,21 +203,23 @@ type CandleSnapshot struct {
 }
 
 type OrderRecord struct {
-	ID           int64     `json:"id"`
-	AccountID    string    `json:"account_id"`
-	StrategyID   string    `json:"strategy_id"`
-	Exchange     string    `json:"exchange"`
-	MarketType   string    `json:"market_type"`
-	Symbol       string    `json:"symbol"`
-	Side         string    `json:"side"`
-	OrderType    string    `json:"order_type"`
-	ReduceOnly   bool      `json:"reduce_only"`
-	Price        float64   `json:"price"`
-	Quantity     float64   `json:"quantity"`
-	Status       string    `json:"status"`
-	RiskDecision string    `json:"risk_decision"`
-	RiskReason   string    `json:"risk_reason"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID              int64     `json:"id"`
+	AccountID       string    `json:"account_id"`
+	StrategyID      string    `json:"strategy_id"`
+	Exchange        string    `json:"exchange"`
+	MarketType      string    `json:"market_type"`
+	Symbol          string    `json:"symbol"`
+	Side            string    `json:"side"`
+	OrderType       string    `json:"order_type"`
+	ReduceOnly      bool      `json:"reduce_only"`
+	Price           float64   `json:"price"`
+	Quantity        float64   `json:"quantity"`
+	StopPrice       float64   `json:"stop_price"`
+	TakeProfitPrice float64   `json:"take_profit_price"`
+	Status          string    `json:"status"`
+	RiskDecision    string    `json:"risk_decision"`
+	RiskReason      string    `json:"risk_reason"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 type RiskEvent struct {
@@ -253,12 +255,15 @@ type PositionSnapshot struct {
 	Quantity               float64   `json:"quantity"`
 	EntryPrice             float64   `json:"entry_price"`
 	MarkPrice              float64   `json:"mark_price"`
+	MarkPriceSource        string    `json:"mark_price_source"`
+	MarkPriceTime          time.Time `json:"mark_price_time"`
 	LiquidationPrice       float64   `json:"liquidation_price"`
 	Leverage               float64   `json:"leverage"`
 	MarginMode             string    `json:"margin_mode"`
 	UnrealizedPnL          float64   `json:"unrealized_pnl"`
 	Notional               float64   `json:"notional"`
 	LiquidationDistancePct float64   `json:"liquidation_distance_pct"`
+	SnapshotStale          bool      `json:"snapshot_stale"`
 	SnapshotTime           time.Time `json:"snapshot_time"`
 }
 
@@ -351,7 +356,7 @@ func (s *Server) collect(ctx context.Context, query dashboardQuery) (Data, error
 			return err
 		}},
 		{"backtests", func() error {
-			records, err := s.loadBacktests(ctx)
+			records, err := s.loadBacktests(ctx, query)
 			data.Backtests = records
 			return err
 		}},
@@ -361,7 +366,7 @@ func (s *Server) collect(ctx context.Context, query dashboardQuery) (Data, error
 			return err
 		}},
 		{"orders", func() error {
-			records, err := s.loadOrders(ctx)
+			records, err := s.loadOrders(ctx, query)
 			data.Orders = records
 			return err
 		}},
@@ -376,7 +381,7 @@ func (s *Server) collect(ctx context.Context, query dashboardQuery) (Data, error
 			return err
 		}},
 		{"positions", func() error {
-			records, err := s.loadPositions(ctx)
+			records, err := s.loadPositions(ctx, query)
 			data.Positions = records
 			return err
 		}},
@@ -386,17 +391,17 @@ func (s *Server) collect(ctx context.Context, query dashboardQuery) (Data, error
 			return err
 		}},
 		{"strategy runs", func() error {
-			records, err := s.loadStrategyRuns(ctx)
+			records, err := s.loadStrategyRuns(ctx, query)
 			data.StrategyRuns = records
 			return err
 		}},
 		{"signals", func() error {
-			records, err := s.loadSignals(ctx)
+			records, err := s.loadSignals(ctx, query)
 			data.Signals = records
 			return err
 		}},
 		{"performance snapshots", func() error {
-			records, err := s.loadPerformanceSnapshots(ctx)
+			records, err := s.loadPerformanceSnapshots(ctx, query)
 			data.PerformanceSnapshots = records
 			return err
 		}},
@@ -421,6 +426,9 @@ func (s *Server) collect(ctx context.Context, query dashboardQuery) (Data, error
 			return Data{}, fmt.Errorf("%s: %w", loader.name, err)
 		}
 	}
+	if len(data.Balances) == 0 && len(data.Positions) == 0 && len(data.Margins) == 0 {
+		data.Warnings = append(data.Warnings, "真实交易所账户私有 API 尚未接入；paper 为本地模拟账户，已隐藏 research/demo/test/manual 等手工演示快照")
+	}
 	return data, nil
 }
 
@@ -442,10 +450,23 @@ func (s *Server) loadCounts(ctx context.Context, counts map[string]int64) error 
 
 func (s *Server) countTable(ctx context.Context, table string) (int64, error) {
 	var count int64
-	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table).Scan(&count); err != nil {
+	query := "SELECT COUNT(*) FROM " + table
+	if accountScopedTable(table) {
+		query += " WHERE NOT " + demoAccountPredicate("account_id")
+	}
+	if err := s.db.QueryRowContext(ctx, query).Scan(&count); err != nil {
 		return 0, err
 	}
 	return count, nil
+}
+
+func accountScopedTable(table string) bool {
+	switch table {
+	case "orders", "risk_events", "balances", "positions", "margin_snapshots":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) loadMarketCoverage(ctx context.Context) ([]MarketCoverage, error) {
@@ -608,15 +629,16 @@ func (s *Server) tableColumns(ctx context.Context, tableName string) ([]string, 
 	return columns, nil
 }
 
-func (s *Server) loadBacktests(ctx context.Context) ([]BacktestRun, error) {
+func (s *Server) loadBacktests(ctx context.Context, query dashboardQuery) ([]BacktestRun, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, strategy_name, exchange, market_type, symbol, interval,
 	fast_window, slow_window, fee_rate, total_return_pct, buy_hold_return_pct, excess_return_pct, max_drawdown_pct,
 	trade_count, win_rate_pct, created_at
 FROM backtest_runs
+WHERE exchange = ? AND market_type = ? AND symbol = ? AND interval = ?
 ORDER BY created_at DESC
 LIMIT 12;
-`)
+`, query.Exchange, query.MarketType, query.Symbol, query.Interval)
 	if err != nil {
 		return nil, err
 	}
@@ -657,14 +679,16 @@ LIMIT 12;
 	return records, rows.Err()
 }
 
-func (s *Server) loadOrders(ctx context.Context) ([]OrderRecord, error) {
+func (s *Server) loadOrders(ctx context.Context, query dashboardQuery) ([]OrderRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, account_id, strategy_id, exchange, market_type, symbol, side, order_type,
-	reduce_only, price, quantity, status, risk_decision, risk_reason, created_at
+	reduce_only, price, quantity, stop_price, take_profit_price, status, risk_decision, risk_reason, created_at
 FROM orders
+WHERE NOT `+demoAccountPredicate("account_id")+`
+	AND exchange = ? AND market_type = ? AND symbol = ?
 ORDER BY created_at DESC
 LIMIT 12;
-`)
+`, query.Exchange, query.MarketType, query.Symbol)
 	if err != nil {
 		return nil, err
 	}
@@ -674,7 +698,7 @@ LIMIT 12;
 	for rows.Next() {
 		var record OrderRecord
 		var reduceOnly int
-		if err := rows.Scan(&record.ID, &record.AccountID, &record.StrategyID, &record.Exchange, &record.MarketType, &record.Symbol, &record.Side, &record.OrderType, &reduceOnly, &record.Price, &record.Quantity, &record.Status, &record.RiskDecision, &record.RiskReason, &record.CreatedAt); err != nil {
+		if err := rows.Scan(&record.ID, &record.AccountID, &record.StrategyID, &record.Exchange, &record.MarketType, &record.Symbol, &record.Side, &record.OrderType, &reduceOnly, &record.Price, &record.Quantity, &record.StopPrice, &record.TakeProfitPrice, &record.Status, &record.RiskDecision, &record.RiskReason, &record.CreatedAt); err != nil {
 			return nil, err
 		}
 		record.ReduceOnly = reduceOnly == 1
@@ -688,6 +712,7 @@ func (s *Server) loadRiskEvents(ctx context.Context) ([]RiskEvent, error) {
 SELECT id, account_id, strategy_id, client_order_id, event_time, severity,
 	event_type, symbol, decision, message
 FROM risk_events
+WHERE NOT `+demoAccountPredicate("account_id")+`
 ORDER BY event_time DESC
 LIMIT 12;
 `)
@@ -709,8 +734,15 @@ LIMIT 12;
 
 func (s *Server) loadBalances(ctx context.Context) ([]BalanceSnapshot, error) {
 	rows, err := s.db.QueryContext(ctx, `
+WITH latest_balances AS (
+	SELECT account_id, exchange, asset, free, locked, total, usd_value, snapshot_time,
+		ROW_NUMBER() OVER (PARTITION BY account_id, exchange, asset ORDER BY snapshot_time DESC, id DESC) AS rn
+	FROM balances
+	WHERE NOT `+demoAccountPredicate("account_id")+`
+)
 SELECT account_id, exchange, asset, free, locked, total, usd_value, snapshot_time
-FROM balances
+FROM latest_balances
+WHERE rn = 1
 ORDER BY snapshot_time DESC
 LIMIT 12;
 `)
@@ -730,15 +762,50 @@ LIMIT 12;
 	return records, rows.Err()
 }
 
-func (s *Server) loadPositions(ctx context.Context) ([]PositionSnapshot, error) {
+func (s *Server) loadPositions(ctx context.Context, query dashboardQuery) ([]PositionSnapshot, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT account_id, exchange, market_type, symbol, position_side, quantity, entry_price,
-	mark_price, liquidation_price, leverage, margin_mode, unrealized_pnl, notional,
-	liquidation_distance_pct, snapshot_time
-FROM positions
-ORDER BY snapshot_time DESC
+WITH latest_mark AS (
+	SELECT exchange, symbol, event_time, mark_price
+	FROM (
+		SELECT exchange, symbol, event_time, mark_price,
+			ROW_NUMBER() OVER (PARTITION BY exchange, symbol ORDER BY event_time DESC) AS rn
+		FROM mark_prices
+	)
+	WHERE rn = 1
+),
+latest_spot AS (
+	SELECT exchange, symbol, open_time, close_price
+	FROM (
+		SELECT exchange, symbol, open_time, close_price,
+			ROW_NUMBER() OVER (PARTITION BY exchange, symbol ORDER BY open_time DESC, id DESC) AS rn
+		FROM candles
+		WHERE market_type = 'spot'
+	)
+	WHERE rn = 1
+),
+latest_positions AS (
+	SELECT account_id, exchange, market_type, symbol, position_side, quantity, entry_price,
+		mark_price, liquidation_price, leverage, margin_mode, unrealized_pnl, notional,
+		liquidation_distance_pct, snapshot_time,
+		ROW_NUMBER() OVER (
+			PARTITION BY account_id, exchange, market_type, symbol, position_side
+			ORDER BY snapshot_time DESC, id DESC
+		) AS rn
+	FROM positions
+	WHERE NOT `+demoAccountPredicate("account_id")+`
+		AND (account_id != 'paper' OR margin_mode = 'paper')
+)
+SELECT p.account_id, p.exchange, p.market_type, p.symbol, p.position_side, p.quantity, p.entry_price,
+	p.mark_price, p.liquidation_price, p.leverage, p.margin_mode, p.unrealized_pnl, p.notional,
+	p.liquidation_distance_pct, p.snapshot_time, lm.mark_price, lm.event_time, ls.close_price, ls.open_time
+FROM latest_positions p
+LEFT JOIN latest_mark lm ON lm.exchange = p.exchange AND lm.symbol = p.symbol
+LEFT JOIN latest_spot ls ON ls.exchange = p.exchange AND ls.symbol = p.symbol
+WHERE p.rn = 1 AND p.quantity != 0
+	AND p.exchange = ? AND p.market_type = ? AND p.symbol = ?
+ORDER BY p.snapshot_time DESC
 LIMIT 12;
-`)
+`, query.Exchange, query.MarketType, query.Symbol)
 	if err != nil {
 		return nil, err
 	}
@@ -747,19 +814,75 @@ LIMIT 12;
 	records := make([]PositionSnapshot, 0)
 	for rows.Next() {
 		var record PositionSnapshot
-		if err := rows.Scan(&record.AccountID, &record.Exchange, &record.MarketType, &record.Symbol, &record.PositionSide, &record.Quantity, &record.EntryPrice, &record.MarkPrice, &record.LiquidationPrice, &record.Leverage, &record.MarginMode, &record.UnrealizedPnL, &record.Notional, &record.LiquidationDistancePct, &record.SnapshotTime); err != nil {
+		var latestMarkRaw sql.NullString
+		var latestMarkTime sql.NullTime
+		var latestSpotCloseRaw sql.NullString
+		var latestSpotTime sql.NullTime
+		if err := rows.Scan(&record.AccountID, &record.Exchange, &record.MarketType, &record.Symbol, &record.PositionSide, &record.Quantity, &record.EntryPrice, &record.MarkPrice, &record.LiquidationPrice, &record.Leverage, &record.MarginMode, &record.UnrealizedPnL, &record.Notional, &record.LiquidationDistancePct, &record.SnapshotTime, &latestMarkRaw, &latestMarkTime, &latestSpotCloseRaw, &latestSpotTime); err != nil {
 			return nil, err
 		}
+		applyLatestPositionPrice(&record, latestMarkRaw, latestMarkTime, latestSpotCloseRaw, latestSpotTime)
 		records = append(records, record)
 	}
 	return records, rows.Err()
 }
 
+func applyLatestPositionPrice(record *PositionSnapshot, latestMarkRaw sql.NullString, latestMarkTime sql.NullTime, latestSpotCloseRaw sql.NullString, latestSpotTime sql.NullTime) {
+	record.MarkPriceSource = "position_snapshot"
+	record.MarkPriceTime = record.SnapshotTime
+	record.SnapshotStale = time.Since(record.SnapshotTime) > 5*time.Minute
+
+	if strings.EqualFold(record.MarketType, "spot") && latestSpotCloseRaw.Valid && latestSpotTime.Valid {
+		if latestSpotClose := parseFloat(latestSpotCloseRaw.String); latestSpotClose > 0 {
+			record.MarkPrice = latestSpotClose
+			record.MarkPriceTime = latestSpotTime.Time.UTC()
+			record.MarkPriceSource = "latest_spot_close"
+		}
+	}
+
+	if latestMarkRaw.Valid && latestMarkTime.Valid {
+		if latestMarkPrice := parseFloat(latestMarkRaw.String); latestMarkPrice > 0 {
+			if !strings.EqualFold(record.MarketType, "spot") || record.MarkPriceSource == "position_snapshot" {
+				record.MarkPrice = latestMarkPrice
+				record.MarkPriceTime = latestMarkTime.Time.UTC()
+				record.MarkPriceSource = "latest_mark_price"
+			}
+		}
+	}
+
+	qty := math.Abs(record.Quantity)
+	if qty > 0 && record.MarkPrice > 0 {
+		record.Notional = qty * record.MarkPrice
+	}
+	if qty > 0 && record.EntryPrice > 0 && record.MarkPrice > 0 {
+		if strings.EqualFold(record.PositionSide, "short") {
+			record.UnrealizedPnL = (record.EntryPrice - record.MarkPrice) * qty
+		} else {
+			record.UnrealizedPnL = (record.MarkPrice - record.EntryPrice) * qty
+		}
+	}
+	if record.MarkPrice > 0 && record.LiquidationPrice > 0 {
+		record.LiquidationDistancePct = math.Abs(record.MarkPrice-record.LiquidationPrice) / record.MarkPrice * 100
+	}
+}
+
 func (s *Server) loadMargins(ctx context.Context) ([]MarginSnapshot, error) {
 	rows, err := s.db.QueryContext(ctx, `
+WITH latest_margins AS (
+	SELECT account_id, exchange, market_type, equity, margin_balance, initial_margin,
+		maintenance_margin, margin_ratio, available_balance, snapshot_time,
+		ROW_NUMBER() OVER (
+			PARTITION BY account_id, exchange,
+				CASE WHEN account_id = 'paper' THEN 'paper-current' ELSE market_type END
+			ORDER BY snapshot_time DESC, id DESC
+		) AS rn
+	FROM margin_snapshots
+	WHERE NOT `+demoAccountPredicate("account_id")+`
+)
 SELECT account_id, exchange, market_type, equity, margin_balance, initial_margin,
 	maintenance_margin, margin_ratio, available_balance, snapshot_time
-FROM margin_snapshots
+FROM latest_margins
+WHERE rn = 1
 ORDER BY snapshot_time DESC
 LIMIT 12;
 `)
@@ -779,13 +902,22 @@ LIMIT 12;
 	return records, rows.Err()
 }
 
-func (s *Server) loadStrategyRuns(ctx context.Context) ([]StrategyRun, error) {
+func demoAccountPredicate(column string) string {
+	return fmt.Sprintf("LOWER(%s) IN ('research', 'demo', 'test', 'manual')", column)
+}
+
+func (s *Server) loadStrategyRuns(ctx context.Context, query dashboardQuery) ([]StrategyRun, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, strategy_id, mode, status, started_at, finished_at, created_at
 FROM strategy_runs
+WHERE strategy_id IN (
+	SELECT DISTINCT strategy_id
+	FROM signals
+	WHERE exchange = ? AND market_type = ? AND symbol = ?
+)
 ORDER BY created_at DESC
 LIMIT 12;
-`)
+`, query.Exchange, query.MarketType, query.Symbol)
 	if err != nil {
 		return nil, err
 	}
@@ -806,14 +938,15 @@ LIMIT 12;
 	return records, rows.Err()
 }
 
-func (s *Server) loadSignals(ctx context.Context) ([]SignalRecord, error) {
+func (s *Server) loadSignals(ctx context.Context, query dashboardQuery) ([]SignalRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, strategy_id, run_id, exchange, market_type, symbol, action, confidence,
 	reason, signal_time
 FROM signals
+WHERE exchange = ? AND market_type = ? AND symbol = ?
 ORDER BY signal_time DESC
 LIMIT 12;
-`)
+`, query.Exchange, query.MarketType, query.Symbol)
 	if err != nil {
 		return nil, err
 	}
@@ -830,13 +963,18 @@ LIMIT 12;
 	return records, rows.Err()
 }
 
-func (s *Server) loadPerformanceSnapshots(ctx context.Context) ([]PerformanceSnapshot, error) {
+func (s *Server) loadPerformanceSnapshots(ctx context.Context, query dashboardQuery) ([]PerformanceSnapshot, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT strategy_id, run_id, snapshot_time, equity, pnl, drawdown_pct, exposure
 FROM performance_snapshots
+WHERE strategy_id IN (
+	SELECT DISTINCT strategy_id
+	FROM signals
+	WHERE exchange = ? AND market_type = ? AND symbol = ?
+)
 ORDER BY snapshot_time DESC
 LIMIT 12;
-`)
+`, query.Exchange, query.MarketType, query.Symbol)
 	if err != nil {
 		return nil, err
 	}
@@ -942,6 +1080,7 @@ func allowedTables() map[string]struct{} {
 		"mark_prices":           {},
 		"order_books":           {},
 		"orders":                {},
+		"paper_positions":       {},
 		"performance_snapshots": {},
 		"positions":             {},
 		"risk_events":           {},

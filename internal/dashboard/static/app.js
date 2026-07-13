@@ -129,7 +129,7 @@ function renderMetrics(data) {
 
   $("accountEquity").textContent = latestBalance ? money(latestBalance.total || latestBalance.usd_value) : "--";
   $("accountMeta").textContent = latestBalance
-    ? `${latestBalance.account_id} / ${latestBalance.asset} / 可用 ${money(latestBalance.free)}`
+    ? `${accountLabel(latestBalance.account_id)} / ${latestBalance.asset} / 可用 ${money(latestBalance.free)}`
     : "暂无余额快照";
 
   $("positionPnL").textContent = signedMoney(positionPnl);
@@ -175,6 +175,9 @@ function renderStrategyOverview(data) {
   const slow = latestBacktest.slow_window || parseStrategyWindow(latestBacktest.strategy_name, 1);
   const strategyName = strategyDisplayName(latestBacktest);
   $("strategyName").textContent = strategyName;
+  const isPerpetual = data.query.market_type === "perpetual";
+  $("buyRule").previousElementSibling.textContent = isPerpetual ? "开多" : "买入";
+  $("sellRule").previousElementSibling.textContent = isPerpetual ? "开空" : "卖出";
   if (isAdaptiveTrend(latestBacktest)) {
     $("strategyPlainText").textContent =
       `这是一个多币种趋势轮动策略：用 ${fast} 根 K 线看动量，用 ${slow} 根 K 线判断大趋势，并按波动率控制仓位。`;
@@ -185,10 +188,15 @@ function renderStrategyOverview(data) {
     $("signalReason").textContent = "优先选择强势币，过滤过高 funding，避免单币种满仓追涨。";
     return;
   }
-  $("strategyPlainText").textContent =
-    `这是一个趋势跟随策略：用 ${fast} 根 K 线均价代表短期走势，用 ${slow} 根 K 线均价代表长期走势。`;
-  $("buyRule").textContent = `${fast} 均线 > ${slow} 均线`;
-  $("sellRule").textContent = `${fast} 均线 < ${slow} 均线`;
+  $("strategyPlainText").textContent = isPerpetual
+    ? `这是一个合约短线趋势策略：用 ${fast} 根 K 线均价判断短线方向，用 ${slow} 根 K 线均价过滤趋势，允许开多或开空。`
+    : `这是一个现货短线趋势策略：用 ${fast} 根 K 线均价代表短期走势，用 ${slow} 根 K 线均价代表长期走势，只做多不做空。`;
+  $("buyRule").textContent = isPerpetual
+    ? `开多：${fast} 均线 > ${slow} 均线且价格上行`
+    : `${fast} 均线 > ${slow} 均线且价格上行`;
+  $("sellRule").textContent = isPerpetual
+    ? `开空：${fast} 均线 < ${slow} 均线且价格下行`
+    : `平多：止盈 / 止损 / ${fast} 均线 < ${slow} 均线`;
   $("strategyLimit").textContent = `手续费 ${pct((latestBacktest.fee_rate || 0) * 100)}`;
   $("currentSignal").textContent = latestSignal ? actionLabel(latestSignal.action) : "暂无信号";
   $("signalReason").textContent = latestSignal
@@ -327,7 +335,7 @@ function renderTradeActions(data) {
     time: row.created_at,
     title: `${row.symbol} ${sideLabel(row.side)}`,
     meta: `${marketLabel(row.market_type)} / ${statusLabel(row.status)}`,
-    value: `${money(row.quantity)} @ ${money(row.price)}`,
+    value: `${money(row.quantity)} @ ${money(row.price)} / TP ${moneyOrDash(row.take_profit_price)} SL ${moneyOrDash(row.stop_price)}`,
     tone: row.risk_decision === "allow" ? "positive" : "negative",
   }));
   const signals = (data.signals || []).map((row) => ({
@@ -374,7 +382,7 @@ function renderBalances(rows) {
   $("balanceRows").innerHTML = rows
     .map(
       (row) => `<div class="row-card">
-        <div><strong>${escapeHTML(row.account_id)} / ${escapeHTML(row.asset)}</strong><span>${formatTime(row.snapshot_time)}</span></div>
+        <div><strong>${escapeHTML(accountLabel(row.account_id))} / ${escapeHTML(row.asset)}</strong><span>${formatTime(row.snapshot_time)}</span></div>
         <div class="numeric"><strong>${money(row.total)}</strong><span>可用 ${money(row.free)}</span></div>
       </div>`,
     )
@@ -383,15 +391,36 @@ function renderBalances(rows) {
 
 function renderPositions(rows) {
   $("positionUpdatedAt").textContent = rows.length ? `更新 ${formatTime(rows[0].snapshot_time)}` : "暂无持仓";
-  $("positionRows").innerHTML = rows
-    .map((row) => {
-      const pnl = positionPnL(row);
-      const pnlPct = positionPnLPct(row, pnl.value);
-      return `<div class="position-card">
+  const market = state.data?.query?.market_type || rows[0]?.market_type || "perpetual";
+  const title = market === "spot" ? "现货持仓" : "合约持仓";
+  $("positionRows").innerHTML = positionGroup(title, rows);
+}
+
+function positionGroup(title, rows) {
+  return `<section class="position-group">
+    <div class="position-group-head">
+      <strong>${escapeHTML(title)}</strong>
+      <span>${rows.length ? `${number(rows.length)} 个持仓` : "暂无"}</span>
+    </div>
+    ${rows.length ? rows.map(positionCard).join("") : emptyBlock(title === "现货持仓" ? "暂无现货持仓" : "暂无合约持仓")}
+  </section>`;
+}
+
+function positionCard(row) {
+  const pnl = positionPnL(row);
+  const pnlPct = positionPnLPct(row, pnl.value);
+  const markSource =
+    row.mark_price_source === "latest_spot_close"
+      ? "现货最新价"
+      : row.mark_price_source === "latest_mark_price"
+        ? "合约标记价"
+        : "快照价";
+  const snapshotLabel = row.snapshot_stale ? "账户快照已过期" : "账户快照";
+  return `<div class="position-card">
         <div class="position-head">
           <div>
             <strong>${escapeHTML(row.symbol)} ${escapeHTML(positionSideLabel(row.position_side))}</strong>
-            <span>${escapeHTML(marketLabel(row.market_type))} / ${escapeHTML(row.margin_mode || "cross")} / ${formatTime(row.snapshot_time)}</span>
+            <span>${escapeHTML(marketLabel(row.market_type))} / ${escapeHTML(row.margin_mode || "cross")} / ${snapshotLabel} ${formatTime(row.snapshot_time)}</span>
           </div>
           <div class="position-pnl numeric">
             <strong class="${tone(pnl.value)}">${signedMoney(pnl.value)}</strong>
@@ -400,17 +429,16 @@ function renderPositions(rows) {
         </div>
         <div class="position-detail">
           ${positionMetric("数量", quantity(row.quantity))}
-          ${positionMetric("开仓价", moneyOrDash(row.entry_price))}
-          ${positionMetric("标记价", moneyOrDash(row.mark_price))}
+          ${positionMetric("开仓价", `${moneyOrDash(row.entry_price)} / 账户快照`)}
+          ${positionMetric("标记价", `${moneyOrDash(row.mark_price)} / ${markSource}`)}
+          ${positionMetric("行情时间", formatTime(row.mark_price_time || row.snapshot_time))}
           ${positionMetric("强平价", moneyOrDash(row.liquidation_price))}
           ${positionMetric("杠杆", leverage(row.leverage))}
           ${positionMetric("名义价值", moneyOrDash(row.notional))}
           ${positionMetric("强平距离", pct(row.liquidation_distance_pct))}
-          ${positionMetric("账户", row.account_id || "--")}
+          ${positionMetric("账户", accountLabel(row.account_id))}
         </div>
       </div>`;
-    })
-    .join("") || emptyBlock("暂无持仓");
 }
 
 function renderSignals(rows) {
@@ -672,6 +700,11 @@ function positionSideLabel(value) {
     net: "净仓位",
   };
   return labels[value] || value || "--";
+}
+
+function accountLabel(value) {
+  if (!value) return "--";
+  return value === "paper" ? "paper 模拟账户" : value;
 }
 
 function actionLabel(value) {

@@ -39,6 +39,7 @@ func InitSQLiteSchema(ctx context.Context, db *sql.DB) error {
 		price REAL NOT NULL,
 		quantity REAL NOT NULL,
 		stop_price REAL NOT NULL DEFAULT 0,
+		take_profit_price REAL NOT NULL DEFAULT 0,
 		leverage REAL NOT NULL DEFAULT 1,
 		status TEXT NOT NULL,
 		risk_decision TEXT NOT NULL,
@@ -71,6 +72,38 @@ func InitSQLiteSchema(ctx context.Context, db *sql.DB) error {
 	CREATE INDEX IF NOT EXISTS idx_risk_events_lookup
 	ON risk_events (account_id, strategy_id, symbol, event_time);
 	`)
+	if err != nil {
+		return err
+	}
+	return addColumnIfMissing(ctx, db, "orders", "take_profit_price", "REAL NOT NULL DEFAULT 0")
+}
+
+func addColumnIfMissing(ctx context.Context, db *sql.DB, table string, column string, definition string) error {
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(`+table+`);`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var dataType string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	_, err = db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN `+column+` `+definition+`;`)
 	return err
 }
 
@@ -95,8 +128,8 @@ func (r *SQLiteRepository) RecordDryRunOrder(ctx context.Context, request DryRun
 	INSERT INTO orders (
 		account_id, strategy_id, exchange, market_type, symbol, client_order_id,
 		side, order_type, time_in_force, reduce_only, price, quantity, stop_price,
-		leverage, status, risk_decision, risk_reason, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		take_profit_price, leverage, status, risk_decision, risk_reason, created_at, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(exchange, account_id, client_order_id) DO NOTHING;
 	`,
 		request.Account.AccountID,
@@ -112,6 +145,7 @@ func (r *SQLiteRepository) RecordDryRunOrder(ctx context.Context, request DryRun
 		request.Order.Price,
 		request.Order.Quantity,
 		request.Order.StopPrice,
+		request.TakeProfitPrice,
 		request.Order.Leverage,
 		string(status),
 		string(riskResult.Decision),
@@ -286,7 +320,7 @@ func getOrderByID(ctx context.Context, tx *sql.Tx, id int64) (OrderRecord, error
 	row := tx.QueryRowContext(ctx, `
 	SELECT id, account_id, strategy_id, exchange, market_type, symbol, client_order_id,
 		side, order_type, time_in_force, reduce_only, price, quantity, stop_price,
-		leverage, status, risk_decision, risk_reason, created_at, updated_at
+		take_profit_price, leverage, status, risk_decision, risk_reason, created_at, updated_at
 	FROM orders
 	WHERE id = ?;
 	`, id)
@@ -297,7 +331,7 @@ func getOrderByClientID(ctx context.Context, tx *sql.Tx, exchange string, accoun
 	row := tx.QueryRowContext(ctx, `
 	SELECT id, account_id, strategy_id, exchange, market_type, symbol, client_order_id,
 		side, order_type, time_in_force, reduce_only, price, quantity, stop_price,
-		leverage, status, risk_decision, risk_reason, created_at, updated_at
+		take_profit_price, leverage, status, risk_decision, risk_reason, created_at, updated_at
 	FROM orders
 	WHERE exchange = ? AND account_id = ? AND client_order_id = ?;
 	`, exchange, accountID, clientOrderID)
@@ -357,6 +391,7 @@ func scanOrder(scanner scanner) (OrderRecord, error) {
 		&record.Price,
 		&record.Quantity,
 		&record.StopPrice,
+		&record.TakeProfitPrice,
 		&record.Leverage,
 		&status,
 		&decision,

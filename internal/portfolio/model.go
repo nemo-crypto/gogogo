@@ -35,6 +35,33 @@ type PositionSnapshot struct {
 	CreatedAt           time.Time
 }
 
+type PaperPositionStatus string
+
+const (
+	PaperPositionOpen   PaperPositionStatus = "open"
+	PaperPositionClosed PaperPositionStatus = "closed"
+)
+
+type PaperPositionRecord struct {
+	ID              int64
+	AccountID       string
+	StrategyID      string
+	Exchange        string
+	MarketType      string
+	Symbol          string
+	PositionSide    string
+	Quantity        float64
+	EntryPrice      float64
+	MarkPrice       float64
+	TakeProfitPrice float64
+	StopLossPrice   float64
+	RealizedPnL     float64
+	Status          PaperPositionStatus
+	OpenedAt        time.Time
+	ClosedAt        *time.Time
+	UpdatedAt       time.Time
+}
+
 type MarginSnapshot struct {
 	ID                int64
 	AccountID         string

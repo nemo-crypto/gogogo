@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"gogogo/internal/dashboard"
+	"gogogo/internal/sqliteutil"
 	"gogogo/internal/storage"
 
 	_ "modernc.org/sqlite"
@@ -29,6 +30,9 @@ func main() {
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
 		log.Fatalf("ping sqlite database: %v", err)
+	}
+	if err := sqliteutil.Configure(ctx, db); err != nil {
+		log.Fatalf("configure sqlite database: %v", err)
 	}
 	if err := storage.InitSQLiteSchema(ctx, db); err != nil {
 		log.Fatalf("init sqlite schema: %v", err)

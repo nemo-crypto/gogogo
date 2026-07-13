@@ -30,8 +30,9 @@ func TestSQLiteRepositoryRecordDryRunOrderAllowed(t *testing.T) {
 			Quantity:   0.02,
 			StopPrice:  58_000,
 		},
-		ClientOrderID: "dryrun-test-allow",
-		StrategyID:    "unit",
+		ClientOrderID:   "dryrun-test-allow",
+		StrategyID:      "unit",
+		TakeProfitPrice: 62_000,
 	})
 	if err != nil {
 		t.Fatalf("record dry-run order: %v", err)
@@ -45,6 +46,9 @@ func TestSQLiteRepositoryRecordDryRunOrderAllowed(t *testing.T) {
 	}
 	if result.Order.RiskDecision != risk.DecisionAllow {
 		t.Fatalf("risk decision = %s, want allow", result.Order.RiskDecision)
+	}
+	if result.Order.TakeProfitPrice != 62_000 {
+		t.Fatalf("take profit price = %f, want 62000", result.Order.TakeProfitPrice)
 	}
 	if len(result.Events) != 0 {
 		t.Fatalf("events length = %d, want 0", len(result.Events))

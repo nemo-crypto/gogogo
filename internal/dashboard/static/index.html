@@ -24,7 +24,7 @@
           市场
           <select id="market">
             <option value="spot">现货</option>
-            <option value="perpetual">永续合约</option>
+            <option value="perpetual" selected>永续合约</option>
           </select>
         </label>
         <label>
@@ -39,6 +39,7 @@
         <label>
           周期
           <select id="interval">
+            <option selected>1m</option>
             <option>1h</option>
             <option>15m</option>
             <option>4h</option>
@@ -169,6 +170,7 @@
               <option value="positions">positions</option>
               <option value="balances">balances</option>
               <option value="orders">orders</option>
+              <option value="paper_positions">paper_positions</option>
               <option value="signals">signals</option>
               <option value="performance_snapshots">performance_snapshots</option>
               <option value="candles">candles</option>
