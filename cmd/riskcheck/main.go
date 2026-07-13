@@ -33,13 +33,19 @@ func run() error {
 		consecutiveLosses    = flag.Int("consecutive-losses", 0, "current consecutive losing trades")
 		totalExposure        = flag.Float64("total-exposure", 0, "current total notional exposure")
 		symbolExposure       = flag.Float64("symbol-exposure", 0, "current symbol notional exposure")
+		availableBalance     = flag.Float64("available-balance", 0, "current available balance; 0 derives from equity minus initial margin")
+		initialMargin        = flag.Float64("initial-margin", 0, "current initial margin")
+		maintenanceMargin    = flag.Float64("maintenance-margin", 0, "current maintenance margin")
 		maxOrderRiskPct      = flag.Float64("max-order-risk-pct", risk.DefaultConfig().MaxOrderRiskPct, "max risk per order as pct of equity")
 		maxSymbolExposurePct = flag.Float64("max-symbol-exposure-pct", risk.DefaultConfig().MaxSymbolExposurePct, "max symbol exposure pct of equity")
 		maxTotalExposurePct  = flag.Float64("max-total-exposure-pct", risk.DefaultConfig().MaxTotalExposurePct, "max total exposure pct of equity")
+		maxInitialMarginPct  = flag.Float64("max-initial-margin-pct", risk.DefaultConfig().MaxInitialMarginPct, "max total initial margin pct of equity")
+		maxBalanceUsePct     = flag.Float64("max-balance-use-pct", risk.DefaultConfig().MaxAvailableBalanceUsePct, "max order initial margin pct of available balance")
 		maxLeverage          = flag.Float64("max-leverage", risk.DefaultConfig().MaxLeverage, "max allowed leverage")
 		maxDailyLossPct      = flag.Float64("max-daily-loss-pct", risk.DefaultConfig().MaxDailyLossPct, "daily loss halt pct")
 		maxLosses            = flag.Int("max-consecutive-losses", risk.DefaultConfig().MaxConsecutiveLosses, "consecutive loss halt threshold")
 		minLiqDistancePct    = flag.Float64("min-liquidation-distance-pct", risk.DefaultConfig().MinLiquidationDistancePct, "minimum liquidation distance pct")
+		maintMarginRatePct   = flag.Float64("maintenance-margin-rate-pct", risk.DefaultConfig().MaintenanceMarginRatePct, "maintenance margin rate pct for liquidation estimate")
 		maxFundingPct        = flag.Float64("max-abs-funding-rate-pct", risk.DefaultConfig().MaxAbsFundingRatePct, "max absolute funding rate pct")
 	)
 	flag.Parse()
@@ -48,17 +54,23 @@ func run() error {
 		MaxOrderRiskPct:           *maxOrderRiskPct,
 		MaxSymbolExposurePct:      *maxSymbolExposurePct,
 		MaxTotalExposurePct:       *maxTotalExposurePct,
+		MaxInitialMarginPct:       *maxInitialMarginPct,
+		MaxAvailableBalanceUsePct: *maxBalanceUsePct,
 		MaxLeverage:               *maxLeverage,
 		MaxDailyLossPct:           *maxDailyLossPct,
 		MaxConsecutiveLosses:      *maxLosses,
 		MinLiquidationDistancePct: *minLiqDistancePct,
+		MaintenanceMarginRatePct:  *maintMarginRatePct,
 		MaxAbsFundingRatePct:      *maxFundingPct,
 	}, risk.AccountSnapshot{
 		Equity:                *equity,
+		AvailableBalance:      *availableBalance,
 		DailyRealizedPnL:      *dailyPnL,
 		ConsecutiveLosses:     *consecutiveLosses,
 		CurrentTotalExposure:  *totalExposure,
 		CurrentSymbolExposure: *symbolExposure,
+		CurrentInitialMargin:  *initialMargin,
+		CurrentMaintMargin:    *maintenanceMargin,
 		SnapshotTime:          time.Now().UTC(),
 	}, risk.OrderIntent{
 		Exchange:             "binance",
@@ -78,11 +90,14 @@ func run() error {
 	}
 
 	fmt.Printf("decision=%s\n", result.Decision)
-	fmt.Printf("order_notional=%.4f order_risk=%.4f total_exposure=%.4f symbol_exposure=%.4f\n",
+	fmt.Printf("order_notional=%.4f order_risk=%.4f order_initial_margin=%.4f total_exposure=%.4f symbol_exposure=%.4f total_initial_margin=%.4f available_balance=%.4f\n",
 		result.OrderNotional,
 		result.OrderRisk,
+		result.OrderInitialMargin,
 		result.TotalExposure,
 		result.SymbolExposure,
+		result.TotalInitialMargin,
+		result.AvailableBalance,
 	)
 	for _, event := range result.Events {
 		fmt.Printf("event severity=%s type=%s message=%q\n", event.Severity, event.Type, event.Message)

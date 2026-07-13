@@ -45,13 +45,19 @@ func run() error {
 		consecutiveLosses    = flag.Int("consecutive-losses", 0, "current consecutive losing trades")
 		totalExposure        = flag.Float64("total-exposure", 0, "current total notional exposure")
 		symbolExposure       = flag.Float64("symbol-exposure", 0, "current symbol notional exposure")
+		availableBalance     = flag.Float64("available-balance", 0, "current available balance; 0 derives from equity minus initial margin")
+		initialMargin        = flag.Float64("initial-margin", 0, "current initial margin")
+		maintenanceMargin    = flag.Float64("maintenance-margin", 0, "current maintenance margin")
 		maxOrderRiskPct      = flag.Float64("max-order-risk-pct", defaultRisk.MaxOrderRiskPct, "max risk per order as pct of equity")
 		maxSymbolExposurePct = flag.Float64("max-symbol-exposure-pct", defaultRisk.MaxSymbolExposurePct, "max symbol exposure pct of equity")
 		maxTotalExposurePct  = flag.Float64("max-total-exposure-pct", defaultRisk.MaxTotalExposurePct, "max total exposure pct of equity")
+		maxInitialMarginPct  = flag.Float64("max-initial-margin-pct", defaultRisk.MaxInitialMarginPct, "max total initial margin pct of equity")
+		maxBalanceUsePct     = flag.Float64("max-balance-use-pct", defaultRisk.MaxAvailableBalanceUsePct, "max order initial margin pct of available balance")
 		maxLeverage          = flag.Float64("max-leverage", defaultRisk.MaxLeverage, "max allowed leverage")
 		maxDailyLossPct      = flag.Float64("max-daily-loss-pct", defaultRisk.MaxDailyLossPct, "daily loss halt pct")
 		maxLosses            = flag.Int("max-consecutive-losses", defaultRisk.MaxConsecutiveLosses, "consecutive loss halt threshold")
 		minLiqDistancePct    = flag.Float64("min-liquidation-distance-pct", defaultRisk.MinLiquidationDistancePct, "minimum liquidation distance pct")
+		maintMarginRatePct   = flag.Float64("maintenance-margin-rate-pct", defaultRisk.MaintenanceMarginRatePct, "maintenance margin rate pct for liquidation estimate")
 		maxFundingPct        = flag.Float64("max-abs-funding-rate-pct", defaultRisk.MaxAbsFundingRatePct, "max absolute funding rate pct")
 	)
 	flag.Parse()
@@ -73,10 +79,13 @@ func run() error {
 		Account: risk.AccountSnapshot{
 			AccountID:             *accountID,
 			Equity:                *equity,
+			AvailableBalance:      *availableBalance,
 			DailyRealizedPnL:      *dailyPnL,
 			ConsecutiveLosses:     *consecutiveLosses,
 			CurrentTotalExposure:  *totalExposure,
 			CurrentSymbolExposure: *symbolExposure,
+			CurrentInitialMargin:  *initialMargin,
+			CurrentMaintMargin:    *maintenanceMargin,
 			SnapshotTime:          time.Now().UTC(),
 		},
 		Order: risk.OrderIntent{
@@ -96,10 +105,13 @@ func run() error {
 			MaxOrderRiskPct:           *maxOrderRiskPct,
 			MaxSymbolExposurePct:      *maxSymbolExposurePct,
 			MaxTotalExposurePct:       *maxTotalExposurePct,
+			MaxInitialMarginPct:       *maxInitialMarginPct,
+			MaxAvailableBalanceUsePct: *maxBalanceUsePct,
 			MaxLeverage:               *maxLeverage,
 			MaxDailyLossPct:           *maxDailyLossPct,
 			MaxConsecutiveLosses:      *maxLosses,
 			MinLiquidationDistancePct: *minLiqDistancePct,
+			MaintenanceMarginRatePct:  *maintMarginRatePct,
 			MaxAbsFundingRatePct:      *maxFundingPct,
 		},
 		StrategyID:      *strategyID,
@@ -129,11 +141,14 @@ func printResult(result execution.DryRunResult) {
 		result.Order.TakeProfitPrice,
 		result.Order.ReduceOnly,
 	)
-	fmt.Printf("order_notional=%.4f order_risk=%.4f total_exposure=%.4f symbol_exposure=%.4f\n",
+	fmt.Printf("order_notional=%.4f order_risk=%.4f order_initial_margin=%.4f total_exposure=%.4f symbol_exposure=%.4f total_initial_margin=%.4f available_balance=%.4f\n",
 		result.RiskResult.OrderNotional,
 		result.RiskResult.OrderRisk,
+		result.RiskResult.OrderInitialMargin,
 		result.RiskResult.TotalExposure,
 		result.RiskResult.SymbolExposure,
+		result.RiskResult.TotalInitialMargin,
+		result.RiskResult.AvailableBalance,
 	)
 	for _, event := range result.Events {
 		fmt.Printf("risk_event_id=%d severity=%s type=%s message=%q\n", event.ID, event.Severity, event.EventType, event.Message)

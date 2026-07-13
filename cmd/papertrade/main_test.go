@@ -115,7 +115,7 @@ func TestPaperOrderQuantityUsesRiskBudgetAndNotionalCap(t *testing.T) {
 		Quantity:       0.01,
 		RiskPct:        0.5,
 		MaxNotionalPct: 20,
-	})
+	}, paperAccountState{Equity: 10000, AvailableBalance: 10000})
 	if err != nil {
 		t.Fatalf("paper order quantity: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestPaperOrderQuantityUsesRiskBudgetAndNotionalCap(t *testing.T) {
 		Quantity:       0.01,
 		RiskPct:        0.5,
 		MaxNotionalPct: 0,
-	})
+	}, paperAccountState{Equity: 10000, AvailableBalance: 10000})
 	if err != nil {
 		t.Fatalf("paper order quantity without cap: %v", err)
 	}
@@ -141,13 +141,81 @@ func TestPaperOrderQuantityUsesRiskBudgetAndNotionalCap(t *testing.T) {
 
 func TestPaperOrderQuantityFallsBackToFixedQuantity(t *testing.T) {
 	got, err := paperOrderQuantity(100, 99, paperRunConfig{
+		Equity:   10000,
 		Quantity: 0.25,
-	})
+	}, paperAccountState{Equity: 10000, AvailableBalance: 10000})
 	if err != nil {
 		t.Fatalf("paper order quantity: %v", err)
 	}
 	if !closeEnough(got, 0.25) {
 		t.Fatalf("quantity = %f, want 0.25", got)
+	}
+}
+
+func TestPaperOrderQuantityCapsByAvailableBalanceAndMargin(t *testing.T) {
+	state := paperAccountState{
+		Equity:               10000,
+		AvailableBalance:     1000,
+		CurrentInitialMargin: 3400,
+	}
+	got, err := paperOrderQuantity(100, 99, paperRunConfig{
+		Equity:            10000,
+		RiskPct:           5,
+		MaxNotionalPct:    100,
+		MaxMarginPct:      35,
+		MaxBalanceUsePct:  80,
+		Leverage:          2,
+		MaxOrderRiskPct:   10,
+		MaxLeverage:       3,
+		MinLiqDistancePct: 10,
+		MaintMarginPct:    0.5,
+	}, state)
+	if err != nil {
+		t.Fatalf("paper order quantity: %v", err)
+	}
+	want := 2.0
+	if !closeEnough(got, want) {
+		t.Fatalf("quantity = %f, want %f", got, want)
+	}
+}
+
+func TestPaperOrderQuantityRejectsWhenNoMarginRemains(t *testing.T) {
+	_, err := paperOrderQuantity(100, 99, paperRunConfig{
+		Equity:           10000,
+		RiskPct:          1,
+		MaxMarginPct:     35,
+		MaxBalanceUsePct: 80,
+		Leverage:         1,
+	}, paperAccountState{
+		Equity:               10000,
+		AvailableBalance:     1000,
+		CurrentInitialMargin: 3500,
+	})
+	if err == nil {
+		t.Fatal("paper order quantity error = nil, want error")
+	}
+}
+
+func TestPaperRiskAccountSnapshotUsesCurrentState(t *testing.T) {
+	snapshot := paperRiskAccountSnapshot(paperRunConfig{
+		AccountID: "paper-v2",
+		Equity:    10000,
+	}, paperAccountState{
+		Equity:                9900,
+		AvailableBalance:      8500,
+		CurrentExposure:       2500,
+		CurrentSymbolExposure: 2500,
+		CurrentInitialMargin:  1250,
+		CurrentMaintMargin:    12.5,
+	})
+	if snapshot.Equity != 9900 {
+		t.Fatalf("equity = %f, want 9900", snapshot.Equity)
+	}
+	if snapshot.AvailableBalance != 8500 {
+		t.Fatalf("available balance = %f, want 8500", snapshot.AvailableBalance)
+	}
+	if snapshot.CurrentInitialMargin != 1250 {
+		t.Fatalf("initial margin = %f, want 1250", snapshot.CurrentInitialMargin)
 	}
 }
 

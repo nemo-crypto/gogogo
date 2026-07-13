@@ -384,6 +384,29 @@ func (r *SQLiteRepository) LatestOpenPaperPosition(ctx context.Context, accountI
 	return scanPaperPosition(row)
 }
 
+func (r *SQLiteRepository) SumClosedPaperPositionRealizedPnL(ctx context.Context, accountID string, strategyID string, exchange string, marketType string, symbol string) (float64, error) {
+	accountID = strings.TrimSpace(accountID)
+	strategyID = strings.TrimSpace(strategyID)
+	exchange = strings.ToLower(strings.TrimSpace(exchange))
+	marketType = strings.ToLower(strings.TrimSpace(marketType))
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+
+	var total sql.NullFloat64
+	err := r.db.QueryRowContext(ctx, `
+	SELECT COALESCE(SUM(realized_pnl), 0)
+	FROM paper_positions
+	WHERE account_id = ? AND strategy_id = ? AND exchange = ? AND market_type = ?
+		AND symbol = ? AND status = ?;
+	`, accountID, strategyID, exchange, marketType, symbol, string(PaperPositionClosed)).Scan(&total)
+	if err != nil {
+		return 0, err
+	}
+	if !total.Valid {
+		return 0, nil
+	}
+	return total.Float64, nil
+}
+
 func (r *SQLiteRepository) UpdatePaperPositionMark(ctx context.Context, id int64, markPrice float64) error {
 	if id <= 0 {
 		return errors.New("paper position id is required")

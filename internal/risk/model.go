@@ -42,10 +42,13 @@ type Config struct {
 	MaxOrderRiskPct           float64
 	MaxSymbolExposurePct      float64
 	MaxTotalExposurePct       float64
+	MaxInitialMarginPct       float64
+	MaxAvailableBalanceUsePct float64
 	MaxLeverage               float64
 	MaxDailyLossPct           float64
 	MaxConsecutiveLosses      int
 	MinLiquidationDistancePct float64
+	MaintenanceMarginRatePct  float64
 	MaxAbsFundingRatePct      float64
 }
 
@@ -54,10 +57,13 @@ func DefaultConfig() Config {
 		MaxOrderRiskPct:           1,
 		MaxSymbolExposurePct:      30,
 		MaxTotalExposurePct:       100,
+		MaxInitialMarginPct:       35,
+		MaxAvailableBalanceUsePct: 80,
 		MaxLeverage:               3,
 		MaxDailyLossPct:           2,
 		MaxConsecutiveLosses:      3,
 		MinLiquidationDistancePct: 10,
+		MaintenanceMarginRatePct:  0.5,
 		MaxAbsFundingRatePct:      0.05,
 	}
 }
@@ -65,10 +71,13 @@ func DefaultConfig() Config {
 type AccountSnapshot struct {
 	AccountID             string
 	Equity                float64
+	AvailableBalance      float64
 	DailyRealizedPnL      float64
 	ConsecutiveLosses     int
 	CurrentTotalExposure  float64
 	CurrentSymbolExposure float64
+	CurrentInitialMargin  float64
+	CurrentMaintMargin    float64
 	SnapshotTime          time.Time
 }
 
@@ -97,12 +106,15 @@ type Event struct {
 }
 
 type Result struct {
-	Decision       Decision
-	Events         []Event
-	OrderNotional  float64
-	OrderRisk      float64
-	TotalExposure  float64
-	SymbolExposure float64
+	Decision           Decision
+	Events             []Event
+	OrderNotional      float64
+	OrderRisk          float64
+	OrderInitialMargin float64
+	TotalExposure      float64
+	SymbolExposure     float64
+	TotalInitialMargin float64
+	AvailableBalance   float64
 }
 
 func EvaluateOrder(config Config, account AccountSnapshot, order OrderIntent) (Result, error) {
@@ -118,12 +130,15 @@ func EvaluateOrder(config Config, account AccountSnapshot, order OrderIntent) (R
 	}
 
 	result := Result{
-		Decision:       DecisionAllow,
-		OrderNotional:  order.Notional(),
-		OrderRisk:      orderRisk(order),
-		TotalExposure:  account.CurrentTotalExposure,
-		SymbolExposure: account.CurrentSymbolExposure,
-		Events:         make([]Event, 0),
+		Decision:           DecisionAllow,
+		OrderNotional:      order.Notional(),
+		OrderRisk:          orderRisk(order),
+		OrderInitialMargin: orderInitialMargin(order),
+		TotalExposure:      account.CurrentTotalExposure,
+		SymbolExposure:     account.CurrentSymbolExposure,
+		TotalInitialMargin: account.CurrentInitialMargin,
+		AvailableBalance:   effectiveAvailableBalance(account),
+		Events:             make([]Event, 0),
 	}
 
 	if account.DailyRealizedPnL < 0 {
@@ -148,14 +163,35 @@ func EvaluateOrder(config Config, account AccountSnapshot, order OrderIntent) (R
 		if riskPct(result.OrderRisk, account.Equity) > config.MaxOrderRiskPct {
 			result.add(DecisionReject, SeverityCritical, "order_risk_limit", fmt.Sprintf("order risk %.2f%% exceeds limit %.2f%%", riskPct(result.OrderRisk, account.Equity), config.MaxOrderRiskPct))
 		}
+
+		if order.MarketType == MarketTypeSpot && order.Side == SideBuy && result.OrderNotional > result.AvailableBalance {
+			result.add(DecisionReject, SeverityCritical, "available_balance_limit", fmt.Sprintf("order notional %.4f exceeds available balance %.4f", result.OrderNotional, result.AvailableBalance))
+		}
 	}
 
-	if order.MarketType == MarketTypePerpetual {
+	if order.MarketType == MarketTypePerpetual && !order.ReduceOnly {
 		if order.Leverage > config.MaxLeverage {
 			result.add(DecisionReject, SeverityCritical, "leverage_limit", fmt.Sprintf("leverage %.2fx exceeds limit %.2fx", order.Leverage, config.MaxLeverage))
 		}
-		if order.LiquidationPrice > 0 {
-			distance := liquidationDistancePct(order)
+		result.TotalInitialMargin = account.CurrentInitialMargin + result.OrderInitialMargin
+		if result.OrderInitialMargin > result.AvailableBalance {
+			result.add(DecisionReject, SeverityCritical, "available_balance_limit", fmt.Sprintf("initial margin %.4f exceeds available balance %.4f", result.OrderInitialMargin, result.AvailableBalance))
+		}
+		if config.MaxAvailableBalanceUsePct > 0 && result.AvailableBalance > 0 {
+			availableUsePct := result.OrderInitialMargin / result.AvailableBalance * 100
+			if availableUsePct > config.MaxAvailableBalanceUsePct {
+				result.add(DecisionReject, SeverityCritical, "available_balance_use_limit", fmt.Sprintf("order uses %.2f%% of available balance, limit %.2f%%", availableUsePct, config.MaxAvailableBalanceUsePct))
+			}
+		}
+		if marginPct(result.TotalInitialMargin, account.Equity) > config.MaxInitialMarginPct {
+			result.add(DecisionReject, SeverityCritical, "initial_margin_limit", fmt.Sprintf("initial margin %.2f%% exceeds limit %.2f%%", marginPct(result.TotalInitialMargin, account.Equity), config.MaxInitialMarginPct))
+		}
+		liquidationPrice := order.LiquidationPrice
+		if liquidationPrice <= 0 {
+			liquidationPrice = EstimateLiquidationPrice(order.Price, order.Side, order.Leverage, config.MaintenanceMarginRatePct)
+		}
+		if liquidationPrice > 0 {
+			distance := liquidationDistancePct(order.Price, liquidationPrice)
 			if distance < config.MinLiquidationDistancePct {
 				result.add(DecisionReject, SeverityCritical, "liquidation_distance_limit", fmt.Sprintf("liquidation distance %.2f%% below limit %.2f%%", distance, config.MinLiquidationDistancePct))
 			}
@@ -189,6 +225,12 @@ func validateConfig(config Config) error {
 	if config.MaxTotalExposurePct <= 0 {
 		return errors.New("max total exposure pct must be positive")
 	}
+	if config.MaxInitialMarginPct <= 0 {
+		return errors.New("max initial margin pct must be positive")
+	}
+	if config.MaxAvailableBalanceUsePct < 0 {
+		return errors.New("max available balance use pct cannot be negative")
+	}
 	if config.MaxLeverage <= 0 {
 		return errors.New("max leverage must be positive")
 	}
@@ -197,6 +239,9 @@ func validateConfig(config Config) error {
 	}
 	if config.MinLiquidationDistancePct < 0 {
 		return errors.New("min liquidation distance pct cannot be negative")
+	}
+	if config.MaintenanceMarginRatePct < 0 {
+		return errors.New("maintenance margin rate pct cannot be negative")
 	}
 	if config.MaxAbsFundingRatePct < 0 {
 		return errors.New("max abs funding rate pct cannot be negative")
@@ -213,6 +258,15 @@ func validateAccount(account AccountSnapshot) error {
 	}
 	if account.CurrentSymbolExposure < 0 {
 		return errors.New("current symbol exposure cannot be negative")
+	}
+	if account.AvailableBalance < 0 {
+		return errors.New("available balance cannot be negative")
+	}
+	if account.CurrentInitialMargin < 0 {
+		return errors.New("current initial margin cannot be negative")
+	}
+	if account.CurrentMaintMargin < 0 {
+		return errors.New("current maintenance margin cannot be negative")
 	}
 	if account.ConsecutiveLosses < 0 {
 		return errors.New("consecutive losses cannot be negative")
@@ -264,16 +318,58 @@ func orderRisk(order OrderIntent) float64 {
 	return math.Abs(order.Price-order.StopPrice) * order.Quantity
 }
 
+func orderInitialMargin(order OrderIntent) float64 {
+	if order.MarketType != MarketTypePerpetual || order.Leverage <= 0 {
+		return 0
+	}
+	return order.Notional() / order.Leverage
+}
+
+func effectiveAvailableBalance(account AccountSnapshot) float64 {
+	if account.AvailableBalance > 0 {
+		return account.AvailableBalance
+	}
+	available := account.Equity - account.CurrentInitialMargin
+	if available < 0 {
+		return 0
+	}
+	return available
+}
+
 func exposurePct(exposure float64, equity float64) float64 {
 	return exposure / equity * 100
+}
+
+func marginPct(margin float64, equity float64) float64 {
+	return margin / equity * 100
 }
 
 func riskPct(risk float64, equity float64) float64 {
 	return risk / equity * 100
 }
 
-func liquidationDistancePct(order OrderIntent) float64 {
-	return math.Abs(order.Price-order.LiquidationPrice) / order.Price * 100
+func liquidationDistancePct(price float64, liquidationPrice float64) float64 {
+	return math.Abs(price-liquidationPrice) / price * 100
+}
+
+func EstimateLiquidationPrice(entryPrice float64, side Side, leverage float64, maintenanceMarginRatePct float64) float64 {
+	if entryPrice <= 0 || leverage <= 0 {
+		return 0
+	}
+	maintenanceRate := math.Max(maintenanceMarginRatePct, 0) / 100
+	marginRate := 1 / leverage
+	if side == SideSell {
+		liquidation := entryPrice * (1 + marginRate - maintenanceRate)
+		if liquidation <= 0 || math.IsNaN(liquidation) || math.IsInf(liquidation, 0) {
+			return 0
+		}
+		return liquidation
+	}
+	liquidation := entryPrice * (1 - marginRate + maintenanceRate)
+	if liquidation <= 0 || math.IsNaN(liquidation) || math.IsInf(liquidation, 0) {
+		return 0
+	}
+	return liquidation
 }
 
 func decisionRank(decision Decision) int {

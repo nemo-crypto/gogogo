@@ -280,15 +280,21 @@ func insertRiskEvents(ctx context.Context, tx *sql.Tx, request DryRunRequest, or
 
 func riskContextJSON(result risk.Result) (string, error) {
 	payload := struct {
-		OrderNotional  float64 `json:"order_notional"`
-		OrderRisk      float64 `json:"order_risk"`
-		TotalExposure  float64 `json:"total_exposure"`
-		SymbolExposure float64 `json:"symbol_exposure"`
+		OrderNotional      float64 `json:"order_notional"`
+		OrderRisk          float64 `json:"order_risk"`
+		OrderInitialMargin float64 `json:"order_initial_margin"`
+		TotalExposure      float64 `json:"total_exposure"`
+		SymbolExposure     float64 `json:"symbol_exposure"`
+		TotalInitialMargin float64 `json:"total_initial_margin"`
+		AvailableBalance   float64 `json:"available_balance"`
 	}{
-		OrderNotional:  result.OrderNotional,
-		OrderRisk:      result.OrderRisk,
-		TotalExposure:  result.TotalExposure,
-		SymbolExposure: result.SymbolExposure,
+		OrderNotional:      result.OrderNotional,
+		OrderRisk:          result.OrderRisk,
+		OrderInitialMargin: result.OrderInitialMargin,
+		TotalExposure:      result.TotalExposure,
+		SymbolExposure:     result.SymbolExposure,
+		TotalInitialMargin: result.TotalInitialMargin,
+		AvailableBalance:   result.AvailableBalance,
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {

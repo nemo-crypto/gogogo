@@ -59,6 +59,12 @@ func run() error {
 		quantity      = flag.Float64("quantity", 0.01, "paper order quantity")
 		riskPct       = flag.Float64("risk-pct", 0, "risk pct of equity per trade; overrides -quantity when positive")
 		maxNotional   = flag.Float64("max-notional-pct", 100, "maximum notional as pct of equity for paper order sizing")
+		maxMargin     = flag.Float64("max-margin-pct", risk.DefaultConfig().MaxInitialMarginPct, "maximum total initial margin as pct of equity")
+		maxBalanceUse = flag.Float64("max-balance-use-pct", risk.DefaultConfig().MaxAvailableBalanceUsePct, "maximum order initial margin as pct of available balance")
+		minLiqDist    = flag.Float64("min-liquidation-distance-pct", risk.DefaultConfig().MinLiquidationDistancePct, "minimum estimated liquidation distance pct")
+		maintMargin   = flag.Float64("maintenance-margin-rate-pct", risk.DefaultConfig().MaintenanceMarginRatePct, "maintenance margin rate pct used for paper liquidation estimate")
+		maxOrderRisk  = flag.Float64("max-order-risk-pct", risk.DefaultConfig().MaxOrderRiskPct, "maximum order stop loss risk as pct of equity")
+		maxLeverage   = flag.Float64("max-leverage", risk.DefaultConfig().MaxLeverage, "maximum allowed paper leverage")
 		leverage      = flag.Float64("leverage", 1, "paper position leverage")
 		watch         = flag.Bool("watch", false, "keep running paper strategy on latest local market data")
 		pollEvery     = flag.Duration("poll-interval", 15*time.Second, "poll interval when -watch is enabled")
@@ -117,6 +123,12 @@ func run() error {
 		Quantity:          *quantity,
 		RiskPct:           *riskPct,
 		MaxNotionalPct:    *maxNotional,
+		MaxMarginPct:      *maxMargin,
+		MaxBalanceUsePct:  *maxBalanceUse,
+		MinLiqDistancePct: *minLiqDist,
+		MaintMarginPct:    *maintMargin,
+		MaxOrderRiskPct:   *maxOrderRisk,
+		MaxLeverage:       *maxLeverage,
 		Leverage:          *leverage,
 		Watch:             *watch,
 		PollInterval:      *pollEvery,
@@ -158,6 +170,12 @@ type paperRunConfig struct {
 	Quantity          float64
 	RiskPct           float64
 	MaxNotionalPct    float64
+	MaxMarginPct      float64
+	MaxBalanceUsePct  float64
+	MinLiqDistancePct float64
+	MaintMarginPct    float64
+	MaxOrderRiskPct   float64
+	MaxLeverage       float64
 	Leverage          float64
 	Watch             bool
 	PollInterval      time.Duration
@@ -243,25 +261,32 @@ func runPaperStrategyOnce(ctx context.Context, db *sql.DB, config paperRunConfig
 
 	strategyRepo := strategy.NewSQLiteRepository(db)
 	configJSON, err := marshalJSON(map[string]any{
-		"strategy_type":        normalizedStrategyType(config.StrategyType),
-		"fast":                 config.FastWindow,
-		"slow":                 config.SlowWindow,
-		"symbol":               config.Symbol,
-		"take_profit_pct":      config.TakeProfitPct,
-		"stop_loss_pct":        config.StopLossPct,
-		"cooldown_bars":        config.CooldownBars,
-		"fee_rate":             config.FeeRate,
-		"slippage_rate":        config.SlippageRate,
-		"market_type":          config.MarketType,
-		"min_trend_spread_pct": config.MinTrendSpreadPct,
-		"confirm_bars":         config.ConfirmBars,
-		"atr_window":           config.ATRWindow,
-		"min_atr_pct":          config.MinATRPct,
-		"max_atr_pct":          config.MaxATRPct,
-		"volume_window":        config.VolumeWindow,
-		"min_volume_ratio":     config.MinVolumeRatio,
-		"risk_pct":             config.RiskPct,
-		"max_notional_pct":     config.MaxNotionalPct,
+		"strategy_type":          normalizedStrategyType(config.StrategyType),
+		"fast":                   config.FastWindow,
+		"slow":                   config.SlowWindow,
+		"symbol":                 config.Symbol,
+		"take_profit_pct":        config.TakeProfitPct,
+		"stop_loss_pct":          config.StopLossPct,
+		"cooldown_bars":          config.CooldownBars,
+		"fee_rate":               config.FeeRate,
+		"slippage_rate":          config.SlippageRate,
+		"market_type":            config.MarketType,
+		"min_trend_spread_pct":   config.MinTrendSpreadPct,
+		"confirm_bars":           config.ConfirmBars,
+		"atr_window":             config.ATRWindow,
+		"min_atr_pct":            config.MinATRPct,
+		"max_atr_pct":            config.MaxATRPct,
+		"volume_window":          config.VolumeWindow,
+		"min_volume_ratio":       config.MinVolumeRatio,
+		"risk_pct":               config.RiskPct,
+		"max_notional_pct":       config.MaxNotionalPct,
+		"max_margin_pct":         config.MaxMarginPct,
+		"max_balance_use_pct":    config.MaxBalanceUsePct,
+		"min_liq_distance_pct":   config.MinLiqDistancePct,
+		"maintenance_margin_pct": config.MaintMarginPct,
+		"max_order_risk_pct":     config.MaxOrderRiskPct,
+		"max_leverage":           config.MaxLeverage,
+		"leverage":               config.Leverage,
 	})
 	if err != nil {
 		return fmt.Errorf("encode strategy config: %w", err)
@@ -282,6 +307,7 @@ func runPaperStrategyOnce(ctx context.Context, db *sql.DB, config paperRunConfig
 		MarkTime:        latestTime,
 		Equity:          config.Equity,
 		Leverage:        config.Leverage,
+		MaintMarginPct:  config.MaintMarginPct,
 		TakeProfitPct:   config.TakeProfitPct,
 		StopLossPct:     config.StopLossPct,
 		FastWindow:      config.FastWindow,
@@ -340,6 +366,11 @@ func runPaperStrategyOnce(ctx context.Context, db *sql.DB, config paperRunConfig
 		"max_atr_pct":          config.MaxATRPct,
 		"volume_window":        config.VolumeWindow,
 		"min_volume_ratio":     config.MinVolumeRatio,
+		"risk_pct":             config.RiskPct,
+		"max_notional_pct":     config.MaxNotionalPct,
+		"max_margin_pct":       config.MaxMarginPct,
+		"max_balance_use_pct":  config.MaxBalanceUsePct,
+		"min_liq_distance_pct": config.MinLiqDistancePct,
 		"latest_signal_input":  normalizedStrategyType(config.StrategyType),
 		"position_side":        signal.PositionSide,
 	})
@@ -373,6 +404,11 @@ func runPaperStrategyOnce(ctx context.Context, db *sql.DB, config paperRunConfig
 		"max_atr_pct":          config.MaxATRPct,
 		"volume_window":        config.VolumeWindow,
 		"min_volume_ratio":     config.MinVolumeRatio,
+		"risk_pct":             config.RiskPct,
+		"max_notional_pct":     config.MaxNotionalPct,
+		"max_margin_pct":       config.MaxMarginPct,
+		"max_balance_use_pct":  config.MaxBalanceUsePct,
+		"min_liq_distance_pct": config.MinLiqDistancePct,
 	})
 	if err != nil {
 		return fmt.Errorf("encode performance metrics: %w", err)
@@ -394,26 +430,26 @@ func runPaperStrategyOnce(ctx context.Context, db *sql.DB, config paperRunConfig
 		if err != nil {
 			return err
 		}
-		orderQuantity, err := paperOrderQuantity(latestPrice, stopPrice, config)
+		orderQuantity, err := paperOrderQuantity(latestPrice, stopPrice, config, paperState)
 		if err != nil {
 			return err
 		}
 		orderRepo := execution.NewSQLiteRepository(db)
+		liquidationPrice := risk.EstimateLiquidationPrice(latestPrice, side, config.Leverage, config.MaintMarginPct)
 		dryRun, err := orderRepo.RecordDryRunOrder(ctx, execution.DryRunRequest{
-			Account: risk.AccountSnapshot{
-				AccountID: config.AccountID,
-				Equity:    config.Equity,
-			},
+			Account: paperRiskAccountSnapshot(config, paperState),
 			Order: risk.OrderIntent{
-				Exchange:   config.Exchange,
-				MarketType: risk.MarketType(config.MarketType),
-				Symbol:     config.Symbol,
-				Side:       side,
-				Price:      latestPrice,
-				Quantity:   orderQuantity,
-				StopPrice:  stopPrice,
-				Leverage:   config.Leverage,
+				Exchange:         config.Exchange,
+				MarketType:       risk.MarketType(config.MarketType),
+				Symbol:           config.Symbol,
+				Side:             side,
+				Price:            latestPrice,
+				Quantity:         orderQuantity,
+				StopPrice:        stopPrice,
+				Leverage:         config.Leverage,
+				LiquidationPrice: liquidationPrice,
 			},
+			RiskConfig:      paperRiskConfig(config),
 			StrategyID:      config.StrategyID,
 			ClientOrderID:   fmt.Sprintf("paper-%s-%d", config.Symbol, time.Now().UTC().UnixNano()),
 			OrderType:       "market",
@@ -438,8 +474,9 @@ func runPaperStrategyOnce(ctx context.Context, db *sql.DB, config paperRunConfig
 			EntryPrice:      latestPrice,
 			TakeProfitPrice: takeProfitPrice,
 			StopLossPrice:   stopPrice,
-			Equity:          config.Equity,
+			Equity:          paperState.Equity,
 			Leverage:        config.Leverage,
+			MaintMarginPct:  config.MaintMarginPct,
 			FeeRate:         config.FeeRate,
 			SlippageRate:    config.SlippageRate,
 			OpenedAt:        latestTime,
@@ -485,6 +522,7 @@ type paperSettleRequest struct {
 	MarkTime        time.Time
 	Equity          float64
 	Leverage        float64
+	MaintMarginPct  float64
 	TakeProfitPct   float64
 	StopLossPct     float64
 	FastWindow      int
@@ -496,11 +534,18 @@ type paperSettleRequest struct {
 }
 
 type paperAccountState struct {
-	Open      bool
-	Equity    float64
-	TotalPnL  float64
-	Position  portfolio.PaperPositionRecord
-	CloseNote string
+	Open                  bool
+	Equity                float64
+	AvailableBalance      float64
+	TotalPnL              float64
+	RealizedPnL           float64
+	UnrealizedPnL         float64
+	CurrentExposure       float64
+	CurrentSymbolExposure float64
+	CurrentInitialMargin  float64
+	CurrentMaintMargin    float64
+	Position              portfolio.PaperPositionRecord
+	CloseNote             string
 }
 
 type paperOpenRequest struct {
@@ -516,17 +561,39 @@ type paperOpenRequest struct {
 	StopLossPrice   float64
 	Equity          float64
 	Leverage        float64
+	MaintMarginPct  float64
 	FeeRate         float64
 	SlippageRate    float64
 	OpenedAt        time.Time
 }
 
 func settlePaperPosition(ctx context.Context, repo *portfolio.SQLiteRepository, request paperSettleRequest) (paperAccountState, error) {
-	state := paperAccountState{Equity: request.Equity}
+	realizedPnL, err := repo.SumClosedPaperPositionRealizedPnL(ctx, request.AccountID, request.StrategyID, request.Exchange, request.MarketType, request.Symbol)
+	if err != nil {
+		return paperAccountState{}, fmt.Errorf("sum closed paper pnl: %w", err)
+	}
+	state := paperAccountState{
+		Equity:           request.Equity + realizedPnL,
+		AvailableBalance: request.Equity + realizedPnL,
+		TotalPnL:         realizedPnL,
+		RealizedPnL:      realizedPnL,
+	}
 	position, err := repo.LatestOpenPaperPosition(ctx, request.AccountID, request.StrategyID, request.Exchange, request.MarketType, request.Symbol)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			if err := savePaperAccountSnapshots(ctx, repo, request.AccountID, request.Exchange, request.MarketType, request.Symbol, request.Equity, request.Leverage, portfolio.PaperPositionRecord{}, request.MarkPrice, request.MarkTime, request.FeeRate, request.SlippageRate); err != nil {
+			if err := savePaperAccountSnapshots(ctx, repo, paperSnapshotRequest{
+				AccountID:      request.AccountID,
+				Exchange:       request.Exchange,
+				MarketType:     request.MarketType,
+				Symbol:         request.Symbol,
+				Equity:         state.Equity,
+				Leverage:       request.Leverage,
+				MaintMarginPct: request.MaintMarginPct,
+				MarkPrice:      request.MarkPrice,
+				SnapshotTime:   request.MarkTime,
+				FeeRate:        request.FeeRate,
+				SlippageRate:   request.SlippageRate,
+			}); err != nil {
 				return paperAccountState{}, err
 			}
 			return state, nil
@@ -550,10 +617,24 @@ func settlePaperPosition(ctx context.Context, repo *portfolio.SQLiteRepository, 
 			return paperAccountState{}, fmt.Errorf("close paper position: %w", err)
 		}
 		state.Position = closed
-		state.TotalPnL = closed.RealizedPnL
+		state.RealizedPnL += closed.RealizedPnL
+		state.TotalPnL = state.RealizedPnL
 		state.Equity = request.Equity + state.TotalPnL
+		state.AvailableBalance = state.Equity
 		state.CloseNote = exitReason
-		if err := savePaperAccountSnapshots(ctx, repo, request.AccountID, request.Exchange, request.MarketType, request.Symbol, state.Equity, request.Leverage, portfolio.PaperPositionRecord{}, request.MarkPrice, request.MarkTime, request.FeeRate, request.SlippageRate); err != nil {
+		if err := savePaperAccountSnapshots(ctx, repo, paperSnapshotRequest{
+			AccountID:      request.AccountID,
+			Exchange:       request.Exchange,
+			MarketType:     request.MarketType,
+			Symbol:         request.Symbol,
+			Equity:         state.Equity,
+			Leverage:       request.Leverage,
+			MaintMarginPct: request.MaintMarginPct,
+			MarkPrice:      request.MarkPrice,
+			SnapshotTime:   request.MarkTime,
+			FeeRate:        request.FeeRate,
+			SlippageRate:   request.SlippageRate,
+		}); err != nil {
 			return paperAccountState{}, err
 		}
 		fmt.Printf("paper_position_closed id=%d reason=%s exit=%.8f realized_pnl=%.8f\n", closed.ID, exitReason, request.MarkPrice, closed.RealizedPnL)
@@ -566,9 +647,28 @@ func settlePaperPosition(ctx context.Context, repo *portfolio.SQLiteRepository, 
 	position.MarkPrice = request.MarkPrice
 	state.Open = true
 	state.Position = position
-	state.TotalPnL = paperPositionNetPnL(position, request.MarkPrice, request.FeeRate, request.SlippageRate)
+	state.UnrealizedPnL = paperPositionNetPnL(position, request.MarkPrice, request.FeeRate, request.SlippageRate)
+	state.TotalPnL = state.RealizedPnL + state.UnrealizedPnL
 	state.Equity = request.Equity + state.TotalPnL
-	if err := savePaperAccountSnapshots(ctx, repo, request.AccountID, request.Exchange, request.MarketType, request.Symbol, state.Equity, request.Leverage, position, request.MarkPrice, request.MarkTime, request.FeeRate, request.SlippageRate); err != nil {
+	state.CurrentExposure = paperPositionNotional(position, request.MarkPrice)
+	state.CurrentSymbolExposure = state.CurrentExposure
+	state.CurrentInitialMargin = paperInitialMargin(state.CurrentExposure, request.Leverage)
+	state.CurrentMaintMargin = paperMaintenanceMargin(state.CurrentExposure, request.MaintMarginPct)
+	state.AvailableBalance = paperAvailableBalance(state.Equity, state.CurrentInitialMargin)
+	if err := savePaperAccountSnapshots(ctx, repo, paperSnapshotRequest{
+		AccountID:      request.AccountID,
+		Exchange:       request.Exchange,
+		MarketType:     request.MarketType,
+		Symbol:         request.Symbol,
+		Equity:         state.Equity,
+		Leverage:       request.Leverage,
+		MaintMarginPct: request.MaintMarginPct,
+		Position:       position,
+		MarkPrice:      request.MarkPrice,
+		SnapshotTime:   request.MarkTime,
+		FeeRate:        request.FeeRate,
+		SlippageRate:   request.SlippageRate,
+	}); err != nil {
 		return paperAccountState{}, err
 	}
 	return state, nil
@@ -597,70 +697,100 @@ func openPaperPosition(ctx context.Context, repo *portfolio.SQLiteRepository, re
 		return portfolio.PaperPositionRecord{}, fmt.Errorf("reload opened paper position %d: %w", id, err)
 	}
 	openPnL := paperPositionNetPnL(position, request.EntryPrice, request.FeeRate, request.SlippageRate)
-	if err := savePaperAccountSnapshots(ctx, repo, request.AccountID, request.Exchange, request.MarketType, request.Symbol, request.Equity+openPnL, request.Leverage, position, request.EntryPrice, request.OpenedAt, request.FeeRate, request.SlippageRate); err != nil {
+	if err := savePaperAccountSnapshots(ctx, repo, paperSnapshotRequest{
+		AccountID:      request.AccountID,
+		Exchange:       request.Exchange,
+		MarketType:     request.MarketType,
+		Symbol:         request.Symbol,
+		Equity:         request.Equity + openPnL,
+		Leverage:       request.Leverage,
+		MaintMarginPct: request.MaintMarginPct,
+		Position:       position,
+		MarkPrice:      request.EntryPrice,
+		SnapshotTime:   request.OpenedAt,
+		FeeRate:        request.FeeRate,
+		SlippageRate:   request.SlippageRate,
+	}); err != nil {
 		return portfolio.PaperPositionRecord{}, err
 	}
 	return position, nil
 }
 
-func savePaperAccountSnapshots(ctx context.Context, repo *portfolio.SQLiteRepository, accountID string, exchange string, marketType string, symbol string, equity float64, leverage float64, position portfolio.PaperPositionRecord, markPrice float64, snapshotTime time.Time, feeRate float64, slippageRate float64) error {
-	if snapshotTime.IsZero() {
-		snapshotTime = time.Now().UTC()
+type paperSnapshotRequest struct {
+	AccountID      string
+	Exchange       string
+	MarketType     string
+	Symbol         string
+	Equity         float64
+	Leverage       float64
+	MaintMarginPct float64
+	Position       portfolio.PaperPositionRecord
+	MarkPrice      float64
+	SnapshotTime   time.Time
+	FeeRate        float64
+	SlippageRate   float64
+}
+
+func savePaperAccountSnapshots(ctx context.Context, repo *portfolio.SQLiteRepository, request paperSnapshotRequest) error {
+	if request.SnapshotTime.IsZero() {
+		request.SnapshotTime = time.Now().UTC()
 	}
-	locked := 0.0
-	if position.ID != 0 {
-		locked = math.Abs(position.Quantity*markPrice) / math.Max(leverage, 1)
-	}
-	free := equity - locked
-	if free < 0 {
-		free = 0
+	notional := paperPositionNotional(request.Position, request.MarkPrice)
+	locked := paperInitialMargin(notional, request.Leverage)
+	free := paperAvailableBalance(request.Equity, locked)
+	maintenanceMargin := paperMaintenanceMargin(notional, request.MaintMarginPct)
+	marginRatio := 0.0
+	if request.Equity > 0 {
+		marginRatio = maintenanceMargin / request.Equity * 100
 	}
 	if _, err := repo.SaveBalanceSnapshot(ctx, portfolio.BalanceSnapshot{
-		AccountID:    accountID,
-		Exchange:     exchange,
+		AccountID:    request.AccountID,
+		Exchange:     request.Exchange,
 		Asset:        "USDT",
 		Free:         free,
 		Locked:       locked,
-		Total:        equity,
-		USDValue:     equity,
-		SnapshotTime: snapshotTime,
+		Total:        request.Equity,
+		USDValue:     request.Equity,
+		SnapshotTime: request.SnapshotTime,
 	}); err != nil {
 		return fmt.Errorf("save paper balance snapshot: %w", err)
 	}
 
-	if position.ID != 0 {
-		pnl := paperPositionNetPnL(position, markPrice, feeRate, slippageRate)
+	if request.Position.ID != 0 {
+		pnl := paperPositionNetPnL(request.Position, request.MarkPrice, request.FeeRate, request.SlippageRate)
+		liqPrice := paperLiquidationPrice(request.Position.PositionSide, request.Position.EntryPrice, request.Leverage, request.MaintMarginPct)
 		if _, err := repo.SavePositionSnapshot(ctx, portfolio.PositionSnapshot{
-			AccountID:     accountID,
-			Exchange:      exchange,
-			MarketType:    marketType,
-			Symbol:        symbol,
-			PositionSide:  position.PositionSide,
-			Quantity:      position.Quantity,
-			EntryPrice:    position.EntryPrice,
-			MarkPrice:     markPrice,
-			Leverage:      leverage,
-			MarginMode:    "paper",
-			UnrealizedPnL: pnl,
-			Notional:      math.Abs(position.Quantity * markPrice),
-			SnapshotTime:  snapshotTime,
+			AccountID:        request.AccountID,
+			Exchange:         request.Exchange,
+			MarketType:       request.MarketType,
+			Symbol:           request.Symbol,
+			PositionSide:     request.Position.PositionSide,
+			Quantity:         request.Position.Quantity,
+			EntryPrice:       request.Position.EntryPrice,
+			MarkPrice:        request.MarkPrice,
+			LiquidationPrice: liqPrice,
+			Leverage:         request.Leverage,
+			MarginMode:       "isolated-paper",
+			UnrealizedPnL:    pnl,
+			Notional:         notional,
+			SnapshotTime:     request.SnapshotTime,
 		}); err != nil {
 			return fmt.Errorf("save paper position snapshot: %w", err)
 		}
 	} else {
 		for _, side := range []string{"long", "short"} {
 			if _, err := repo.SavePositionSnapshot(ctx, portfolio.PositionSnapshot{
-				AccountID:    accountID,
-				Exchange:     exchange,
-				MarketType:   marketType,
-				Symbol:       symbol,
+				AccountID:    request.AccountID,
+				Exchange:     request.Exchange,
+				MarketType:   request.MarketType,
+				Symbol:       request.Symbol,
 				PositionSide: side,
 				Quantity:     0,
 				EntryPrice:   0,
-				MarkPrice:    markPrice,
-				Leverage:     leverage,
-				MarginMode:   "paper",
-				SnapshotTime: snapshotTime,
+				MarkPrice:    request.MarkPrice,
+				Leverage:     request.Leverage,
+				MarginMode:   "isolated-paper",
+				SnapshotTime: request.SnapshotTime,
 			}); err != nil {
 				return fmt.Errorf("save flat paper %s position snapshot: %w", side, err)
 			}
@@ -668,13 +798,16 @@ func savePaperAccountSnapshots(ctx context.Context, repo *portfolio.SQLiteReposi
 	}
 
 	if _, err := repo.SaveMarginSnapshot(ctx, portfolio.MarginSnapshot{
-		AccountID:        accountID,
-		Exchange:         exchange,
-		MarketType:       marketType,
-		Equity:           equity,
-		MarginBalance:    equity,
-		AvailableBalance: free,
-		SnapshotTime:     snapshotTime,
+		AccountID:         request.AccountID,
+		Exchange:          request.Exchange,
+		MarketType:        request.MarketType,
+		Equity:            request.Equity,
+		MarginBalance:     request.Equity,
+		InitialMargin:     locked,
+		MaintenanceMargin: maintenanceMargin,
+		MarginRatio:       marginRatio,
+		AvailableBalance:  free,
+		SnapshotTime:      request.SnapshotTime,
 	}); err != nil {
 		return fmt.Errorf("save paper margin snapshot: %w", err)
 	}
@@ -734,36 +867,170 @@ func paperOrderPlan(action strategy.SignalAction, price float64, takeProfitPct f
 	}
 }
 
-func paperOrderQuantity(entryPrice float64, stopPrice float64, config paperRunConfig) (float64, error) {
+func paperOrderQuantity(entryPrice float64, stopPrice float64, config paperRunConfig, state paperAccountState) (float64, error) {
 	if entryPrice <= 0 || stopPrice <= 0 {
 		return 0, errors.New("entry and stop price must be positive")
+	}
+	equity := state.Equity
+	if equity <= 0 {
+		equity = config.Equity
+	}
+	availableBalance := state.AvailableBalance
+	if availableBalance <= 0 {
+		availableBalance = equity
+	}
+	if equity <= 0 {
+		return 0, errors.New("equity must be positive")
 	}
 	if config.RiskPct <= 0 {
 		if config.Quantity <= 0 {
 			return 0, errors.New("quantity must be positive")
 		}
-		return config.Quantity, nil
-	}
-	if config.Equity <= 0 {
-		return 0, errors.New("equity must be positive when risk pct is enabled")
+		quantity := paperCapQuantity(entryPrice, config.Quantity, config, equity, availableBalance, state.CurrentInitialMargin)
+		if quantity <= 0 || math.IsNaN(quantity) || math.IsInf(quantity, 0) {
+			return 0, errors.New("computed quantity must be positive and finite")
+		}
+		return quantity, nil
 	}
 	riskDistance := math.Abs(entryPrice - stopPrice)
 	if riskDistance <= 0 {
 		return 0, errors.New("stop price must be different from entry price")
 	}
-	riskBudget := config.Equity * config.RiskPct / 100
+	riskBudget := equity * config.RiskPct / 100
 	quantity := riskBudget / riskDistance
+	quantity = paperCapQuantity(entryPrice, quantity, config, equity, availableBalance, state.CurrentInitialMargin)
+	if quantity <= 0 || math.IsNaN(quantity) || math.IsInf(quantity, 0) {
+		return 0, errors.New("computed quantity must be positive and finite")
+	}
+	return quantity, nil
+}
+
+func paperCapQuantity(entryPrice float64, quantity float64, config paperRunConfig, equity float64, availableBalance float64, currentInitialMargin float64) float64 {
+	if quantity <= 0 || entryPrice <= 0 || equity <= 0 {
+		return 0
+	}
 	if config.MaxNotionalPct > 0 {
-		maxNotional := config.Equity * config.MaxNotionalPct / 100
+		maxNotional := equity * config.MaxNotionalPct / 100
 		maxQuantity := maxNotional / entryPrice
 		if quantity > maxQuantity {
 			quantity = maxQuantity
 		}
 	}
-	if quantity <= 0 || math.IsNaN(quantity) || math.IsInf(quantity, 0) {
-		return 0, errors.New("computed quantity must be positive and finite")
+	if config.Leverage > 0 {
+		if config.MaxBalanceUsePct > 0 && availableBalance > 0 {
+			maxOrderMargin := availableBalance * config.MaxBalanceUsePct / 100
+			maxQuantity := maxOrderMargin * config.Leverage / entryPrice
+			if quantity > maxQuantity {
+				quantity = maxQuantity
+			}
+		}
+		if config.MaxMarginPct > 0 {
+			maxTotalMargin := equity * config.MaxMarginPct / 100
+			remainingMargin := maxTotalMargin - currentInitialMargin
+			if remainingMargin < 0 {
+				remainingMargin = 0
+			}
+			maxQuantity := remainingMargin * config.Leverage / entryPrice
+			if quantity > maxQuantity {
+				quantity = maxQuantity
+			}
+		}
 	}
-	return quantity, nil
+	return quantity
+}
+
+func paperRiskConfig(config paperRunConfig) risk.Config {
+	defaultRisk := risk.DefaultConfig()
+	maxSymbolExposurePct := config.MaxNotionalPct
+	if maxSymbolExposurePct <= 0 {
+		maxSymbolExposurePct = defaultRisk.MaxSymbolExposurePct
+	}
+	maxTotalExposurePct := math.Max(defaultRisk.MaxTotalExposurePct, maxSymbolExposurePct)
+	return risk.Config{
+		MaxOrderRiskPct:           paperPositiveOrDefault(config.MaxOrderRiskPct, defaultRisk.MaxOrderRiskPct),
+		MaxSymbolExposurePct:      maxSymbolExposurePct,
+		MaxTotalExposurePct:       maxTotalExposurePct,
+		MaxInitialMarginPct:       paperPositiveOrDefault(config.MaxMarginPct, defaultRisk.MaxInitialMarginPct),
+		MaxAvailableBalanceUsePct: paperNonNegativeOrDefault(config.MaxBalanceUsePct, defaultRisk.MaxAvailableBalanceUsePct),
+		MaxLeverage:               paperPositiveOrDefault(config.MaxLeverage, defaultRisk.MaxLeverage),
+		MaxDailyLossPct:           defaultRisk.MaxDailyLossPct,
+		MaxConsecutiveLosses:      defaultRisk.MaxConsecutiveLosses,
+		MinLiquidationDistancePct: paperNonNegativeOrDefault(config.MinLiqDistancePct, defaultRisk.MinLiquidationDistancePct),
+		MaintenanceMarginRatePct:  paperNonNegativeOrDefault(config.MaintMarginPct, defaultRisk.MaintenanceMarginRatePct),
+		MaxAbsFundingRatePct:      defaultRisk.MaxAbsFundingRatePct,
+	}
+}
+
+func paperRiskAccountSnapshot(config paperRunConfig, state paperAccountState) risk.AccountSnapshot {
+	equity := state.Equity
+	if equity <= 0 {
+		equity = config.Equity
+	}
+	availableBalance := state.AvailableBalance
+	if availableBalance <= 0 {
+		availableBalance = equity
+	}
+	return risk.AccountSnapshot{
+		AccountID:             config.AccountID,
+		Equity:                equity,
+		AvailableBalance:      availableBalance,
+		CurrentTotalExposure:  state.CurrentExposure,
+		CurrentSymbolExposure: state.CurrentSymbolExposure,
+		CurrentInitialMargin:  state.CurrentInitialMargin,
+		CurrentMaintMargin:    state.CurrentMaintMargin,
+		SnapshotTime:          time.Now().UTC(),
+	}
+}
+
+func paperPositionNotional(position portfolio.PaperPositionRecord, markPrice float64) float64 {
+	if position.ID == 0 || markPrice <= 0 {
+		return 0
+	}
+	return math.Abs(position.Quantity * markPrice)
+}
+
+func paperInitialMargin(notional float64, leverage float64) float64 {
+	if notional <= 0 {
+		return 0
+	}
+	return notional / math.Max(leverage, 1)
+}
+
+func paperMaintenanceMargin(notional float64, maintenanceMarginPct float64) float64 {
+	if notional <= 0 || maintenanceMarginPct <= 0 {
+		return 0
+	}
+	return notional * maintenanceMarginPct / 100
+}
+
+func paperAvailableBalance(equity float64, initialMargin float64) float64 {
+	available := equity - initialMargin
+	if available < 0 {
+		return 0
+	}
+	return available
+}
+
+func paperLiquidationPrice(positionSide string, entryPrice float64, leverage float64, maintenanceMarginPct float64) float64 {
+	side := risk.SideBuy
+	if strings.EqualFold(positionSide, "short") {
+		side = risk.SideSell
+	}
+	return risk.EstimateLiquidationPrice(entryPrice, side, leverage, maintenanceMarginPct)
+}
+
+func paperPositiveOrDefault(value float64, fallback float64) float64 {
+	if value > 0 {
+		return value
+	}
+	return fallback
+}
+
+func paperNonNegativeOrDefault(value float64, fallback float64) float64 {
+	if value >= 0 {
+		return value
+	}
+	return fallback
 }
 
 func paperPositionPnL(position portfolio.PaperPositionRecord, markPrice float64) float64 {

@@ -121,6 +121,75 @@ func TestEvaluateOrderRejectsPerpetualLeverageAndLiquidationRisk(t *testing.T) {
 	}
 }
 
+func TestEvaluateOrderRejectsPerpetualMarginAndAvailableBalanceLimits(t *testing.T) {
+	t.Parallel()
+
+	config := DefaultConfig()
+	config.MaxSymbolExposurePct = 200
+	config.MaxTotalExposurePct = 200
+	config.MaxInitialMarginPct = 35
+	config.MaxAvailableBalanceUsePct = 50
+	result, err := EvaluateOrder(config, AccountSnapshot{
+		AccountID:            "research",
+		Equity:               10_000,
+		AvailableBalance:     1_000,
+		CurrentInitialMargin: 3_000,
+	}, OrderIntent{
+		Exchange:   "binance",
+		MarketType: MarketTypePerpetual,
+		Symbol:     "BTCUSDT",
+		Side:       SideBuy,
+		Price:      60_000,
+		Quantity:   0.02,
+		StopPrice:  59_500,
+		Leverage:   2,
+	})
+	if err != nil {
+		t.Fatalf("evaluate order: %v", err)
+	}
+	if result.Decision != DecisionReject {
+		t.Fatalf("decision = %s, want reject", result.Decision)
+	}
+	for _, eventType := range []string{"available_balance_use_limit", "initial_margin_limit"} {
+		if !hasEvent(result, eventType) {
+			t.Fatalf("missing event %s: %v", eventType, result.Events)
+		}
+	}
+	if result.OrderInitialMargin != 600 {
+		t.Fatalf("order initial margin = %f, want 600", result.OrderInitialMargin)
+	}
+}
+
+func TestEvaluateOrderUsesEstimatedLiquidationPrice(t *testing.T) {
+	t.Parallel()
+
+	config := DefaultConfig()
+	config.MaxSymbolExposurePct = 200
+	config.MinLiquidationDistancePct = 40
+	result, err := EvaluateOrder(config, AccountSnapshot{
+		AccountID: "research",
+		Equity:    10_000,
+	}, OrderIntent{
+		Exchange:   "binance",
+		MarketType: MarketTypePerpetual,
+		Symbol:     "BTCUSDT",
+		Side:       SideSell,
+		Price:      60_000,
+		Quantity:   0.01,
+		StopPrice:  60_500,
+		Leverage:   3,
+	})
+	if err != nil {
+		t.Fatalf("evaluate order: %v", err)
+	}
+	if result.Decision != DecisionReject {
+		t.Fatalf("decision = %s, want reject", result.Decision)
+	}
+	if !hasEvent(result, "liquidation_distance_limit") {
+		t.Fatalf("missing liquidation distance event: %v", result.Events)
+	}
+}
+
 func TestEvaluateOrderHaltsOnDailyLoss(t *testing.T) {
 	t.Parallel()
 

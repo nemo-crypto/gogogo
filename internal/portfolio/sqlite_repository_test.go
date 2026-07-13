@@ -228,3 +228,79 @@ func TestSQLiteRepositoryClosePaperPositionWithRealizedPnL(t *testing.T) {
 		t.Fatalf("realized pnl = %.4f, want 1.25", closed.RealizedPnL)
 	}
 }
+
+func TestSQLiteRepositorySumClosedPaperPositionRealizedPnL(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	db.SetMaxOpenConns(1)
+	if err := InitSQLiteSchema(ctx, db); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	repo := NewSQLiteRepository(db)
+	openedAt := time.Date(2026, 7, 13, 2, 0, 0, 0, time.UTC)
+	firstID, err := repo.OpenPaperPosition(ctx, PaperPositionRecord{
+		AccountID:    "paper-v2",
+		StrategyID:   "scalp-tpsl-perp-v2-paper",
+		Exchange:     "binance",
+		MarketType:   "perpetual",
+		Symbol:       "BTCUSDT",
+		PositionSide: "long",
+		Quantity:     0.01,
+		EntryPrice:   60000,
+		MarkPrice:    60000,
+		OpenedAt:     openedAt,
+	})
+	if err != nil {
+		t.Fatalf("open first paper position: %v", err)
+	}
+	if _, err := repo.ClosePaperPositionWithRealizedPnL(ctx, firstID, 60100, openedAt.Add(time.Minute), 0.75); err != nil {
+		t.Fatalf("close first paper position: %v", err)
+	}
+	secondID, err := repo.OpenPaperPosition(ctx, PaperPositionRecord{
+		AccountID:    "paper-v2",
+		StrategyID:   "scalp-tpsl-perp-v2-paper",
+		Exchange:     "binance",
+		MarketType:   "perpetual",
+		Symbol:       "BTCUSDT",
+		PositionSide: "short",
+		Quantity:     0.01,
+		EntryPrice:   60200,
+		MarkPrice:    60200,
+		OpenedAt:     openedAt.Add(2 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("open second paper position: %v", err)
+	}
+	if _, err := repo.ClosePaperPositionWithRealizedPnL(ctx, secondID, 60300, openedAt.Add(3*time.Minute), -1.25); err != nil {
+		t.Fatalf("close second paper position: %v", err)
+	}
+	if _, err := repo.OpenPaperPosition(ctx, PaperPositionRecord{
+		AccountID:    "paper-v2",
+		StrategyID:   "scalp-tpsl-perp-v2-paper",
+		Exchange:     "binance",
+		MarketType:   "perpetual",
+		Symbol:       "BTCUSDT",
+		PositionSide: "long",
+		Quantity:     0.01,
+		EntryPrice:   60400,
+		MarkPrice:    60400,
+		OpenedAt:     openedAt.Add(4 * time.Minute),
+	}); err != nil {
+		t.Fatalf("open live paper position: %v", err)
+	}
+
+	total, err := repo.SumClosedPaperPositionRealizedPnL(ctx, "paper-v2", "scalp-tpsl-perp-v2-paper", "binance", "perpetual", "BTCUSDT")
+	if err != nil {
+		t.Fatalf("sum realized pnl: %v", err)
+	}
+	if total != -0.5 {
+		t.Fatalf("total realized pnl = %.4f, want -0.5", total)
+	}
+}
