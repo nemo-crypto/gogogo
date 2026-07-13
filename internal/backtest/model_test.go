@@ -175,6 +175,69 @@ func TestLatestScalpTPSLSignalVolumeAndATRFilters(t *testing.T) {
 	}
 }
 
+func TestLatestScalpTPSLSignalEntryExtensionAndPullbackFilters(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	candles := testBacktestCandles(start, []float64{100, 101, 102, 103, 108, 112}, nil)
+
+	side, ok, err := LatestScalpTPSLSignal(candles, ScalpTPSLConfig{
+		FastWindow:           2,
+		SlowWindow:           3,
+		TakeProfitPct:        0.6,
+		StopLossPct:          0.3,
+		MaxEntryExtensionPct: 0.5,
+	})
+	if err != nil {
+		t.Fatalf("latest scalp signal with extension filter: %v", err)
+	}
+	if ok || side != "" {
+		t.Fatalf("side = %q ok=%v, want overextended hold", side, ok)
+	}
+
+	candles = testBacktestCandlesWithRanges(start,
+		[]float64{100, 101, 102, 103, 104, 105},
+		[]float64{100.4, 101.4, 102.4, 103.4, 104.4, 105.4},
+		[]float64{99.6, 100.6, 101.6, 102.6, 102.8, 104.6},
+	)
+	side, ok, err = LatestScalpTPSLSignal(candles, ScalpTPSLConfig{
+		FastWindow:           2,
+		SlowWindow:           3,
+		TakeProfitPct:        0.6,
+		StopLossPct:          0.3,
+		MaxEntryExtensionPct: 1,
+		PullbackLookback:     3,
+		PullbackTolerancePct: 0.1,
+	})
+	if err != nil {
+		t.Fatalf("latest scalp signal with pullback filter: %v", err)
+	}
+	if !ok || side != "long" {
+		t.Fatalf("side = %q ok=%v, want pullback-confirmed long", side, ok)
+	}
+
+	candles = testBacktestCandlesWithRanges(start,
+		[]float64{100, 101, 102, 103, 104, 105},
+		[]float64{100.4, 101.4, 102.4, 103.4, 104.4, 105.4},
+		[]float64{99.6, 100.6, 101.6, 102.6, 103.6, 104.6},
+	)
+	side, ok, err = LatestScalpTPSLSignal(candles, ScalpTPSLConfig{
+		FastWindow:           2,
+		SlowWindow:           3,
+		TakeProfitPct:        0.6,
+		StopLossPct:          0.3,
+		MaxEntryExtensionPct: 1,
+		PullbackLookback:     2,
+		PullbackTolerancePct: 0,
+	})
+	if err != nil {
+		t.Fatalf("latest scalp signal with missing pullback: %v", err)
+	}
+	if ok || side != "" {
+		t.Fatalf("side = %q ok=%v, want missing-pullback hold", side, ok)
+	}
+}
+
 func testBacktestCandles(start time.Time, closes []float64, volumes []float64) []marketdata.Candle {
 	candles := make([]marketdata.Candle, 0, len(closes))
 	for i, closePrice := range closes {
@@ -194,6 +257,26 @@ func testBacktestCandles(start time.Time, closes []float64, volumes []float64) [
 			Low:        formatTestFloat(closePrice - 1),
 			Close:      formatTestFloat(closePrice),
 			Volume:     formatTestFloat(volume),
+		})
+	}
+	return candles
+}
+
+func testBacktestCandlesWithRanges(start time.Time, closes []float64, highs []float64, lows []float64) []marketdata.Candle {
+	candles := make([]marketdata.Candle, 0, len(closes))
+	for i, closePrice := range closes {
+		openTime := start.Add(time.Duration(i) * time.Minute)
+		candles = append(candles, marketdata.Candle{
+			Exchange:   "binance",
+			MarketType: marketdata.MarketTypePerpetual,
+			Symbol:     "BTCUSDT",
+			Interval:   "1m",
+			OpenTime:   openTime,
+			CloseTime:  openTime.Add(time.Minute),
+			High:       formatTestFloat(highs[i]),
+			Low:        formatTestFloat(lows[i]),
+			Close:      formatTestFloat(closePrice),
+			Volume:     "100",
 		})
 	}
 	return candles

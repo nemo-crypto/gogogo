@@ -19,21 +19,24 @@ type SMAConfig struct {
 }
 
 type ScalpTPSLConfig struct {
-	FastWindow        int
-	SlowWindow        int
-	TakeProfitPct     float64
-	StopLossPct       float64
-	CooldownBars      int
-	FeeRate           float64
-	SlippageRate      float64
-	AllowShort        bool
-	MinTrendSpreadPct float64
-	ConfirmBars       int
-	ATRWindow         int
-	MinATRPct         float64
-	MaxATRPct         float64
-	VolumeWindow      int
-	MinVolumeRatio    float64
+	FastWindow           int
+	SlowWindow           int
+	TakeProfitPct        float64
+	StopLossPct          float64
+	CooldownBars         int
+	FeeRate              float64
+	SlippageRate         float64
+	AllowShort           bool
+	MinTrendSpreadPct    float64
+	ConfirmBars          int
+	ATRWindow            int
+	MinATRPct            float64
+	MaxATRPct            float64
+	VolumeWindow         int
+	MinVolumeRatio       float64
+	MaxEntryExtensionPct float64
+	PullbackLookback     int
+	PullbackTolerancePct float64
 }
 
 type Trade struct {
@@ -398,13 +401,19 @@ func normalizeScalpTPSLConfig(config ScalpTPSLConfig) (ScalpTPSLConfig, error) {
 		return ScalpTPSLConfig{}, errors.New("volume window cannot be negative")
 	case config.MinVolumeRatio < 0:
 		return ScalpTPSLConfig{}, errors.New("min volume ratio cannot be negative")
+	case config.MaxEntryExtensionPct < 0:
+		return ScalpTPSLConfig{}, errors.New("max entry extension pct cannot be negative")
+	case config.PullbackLookback < 0:
+		return ScalpTPSLConfig{}, errors.New("pullback lookback cannot be negative")
+	case config.PullbackTolerancePct < 0:
+		return ScalpTPSLConfig{}, errors.New("pullback tolerance pct cannot be negative")
 	}
 	return config, nil
 }
 
 func scalpStrategyName(config ScalpTPSLConfig) string {
 	name := fmt.Sprintf("scalp_tpsl_%d_%d_tp%.2f_sl%.2f", config.FastWindow, config.SlowWindow, config.TakeProfitPct, config.StopLossPct)
-	if config.MinTrendSpreadPct > 0 || config.ConfirmBars > 1 || config.MinATRPct > 0 || config.MaxATRPct > 0 || config.MinVolumeRatio > 0 {
+	if config.MinTrendSpreadPct > 0 || config.ConfirmBars > 1 || config.MinATRPct > 0 || config.MaxATRPct > 0 || config.MinVolumeRatio > 0 || config.MaxEntryExtensionPct > 0 || config.PullbackLookback > 0 {
 		name += "_filtered"
 	}
 	return name
@@ -442,9 +451,21 @@ func scalpSignalAt(closes []float64, highs []float64, lows []float64, volumes []
 		}
 	}
 	if fast > slow && confirmedDirection(closes, index, config.ConfirmBars, 1) {
+		if !entryExtensionOK(currentPrice, fast, 1, config.MaxEntryExtensionPct) {
+			return ""
+		}
+		if !recentPullbackOK(closes, highs, lows, index, config, 1) {
+			return ""
+		}
 		return "long"
 	}
 	if config.AllowShort && fast < slow && confirmedDirection(closes, index, config.ConfirmBars, -1) {
+		if !entryExtensionOK(currentPrice, fast, -1, config.MaxEntryExtensionPct) {
+			return ""
+		}
+		if !recentPullbackOK(closes, highs, lows, index, config, -1) {
+			return ""
+		}
 		return "short"
 	}
 	return ""
@@ -474,7 +495,7 @@ func scalpFilterSeries(candles []marketdata.Candle, config ScalpTPSLConfig) ([]f
 	var highs []float64
 	var lows []float64
 	var volumes []float64
-	if scalpUsesATR(config) {
+	if scalpUsesRangeData(config) {
 		highs = make([]float64, 0, len(candles))
 		lows = make([]float64, 0, len(candles))
 		for _, candle := range candles {
@@ -506,12 +527,62 @@ func scalpFilterSeries(candles []marketdata.Candle, config ScalpTPSLConfig) ([]f
 	return highs, lows, volumes, nil
 }
 
+func scalpUsesRangeData(config ScalpTPSLConfig) bool {
+	return scalpUsesATR(config) || scalpUsesPullback(config)
+}
+
 func scalpUsesATR(config ScalpTPSLConfig) bool {
 	return config.ATRWindow > 0 && (config.MinATRPct > 0 || config.MaxATRPct > 0)
 }
 
 func scalpUsesVolume(config ScalpTPSLConfig) bool {
 	return config.VolumeWindow > 0 && config.MinVolumeRatio > 0
+}
+
+func scalpUsesPullback(config ScalpTPSLConfig) bool {
+	return config.PullbackLookback > 0
+}
+
+func entryExtensionOK(price float64, fastAverage float64, direction int, maxPct float64) bool {
+	if maxPct <= 0 {
+		return true
+	}
+	if price <= 0 {
+		return false
+	}
+	extensionPct := (price - fastAverage) / price * 100
+	if direction < 0 {
+		extensionPct = (fastAverage - price) / price * 100
+	}
+	return extensionPct <= maxPct
+}
+
+func recentPullbackOK(closes []float64, highs []float64, lows []float64, index int, config ScalpTPSLConfig, direction int) bool {
+	if config.PullbackLookback <= 0 {
+		return true
+	}
+	if len(highs) != len(closes) || len(lows) != len(closes) {
+		return false
+	}
+	start := index - config.PullbackLookback + 1
+	minStart := config.FastWindow - 1
+	if start < minStart {
+		start = minStart
+	}
+	if start > index {
+		return false
+	}
+	tolerance := config.PullbackTolerancePct / 100
+	for i := start; i <= index; i++ {
+		fastAverage := sma(closes, i, config.FastWindow)
+		if direction > 0 && lows[i] <= fastAverage*(1+tolerance) {
+			return true
+		}
+		if direction < 0 && highs[i] >= fastAverage*(1-tolerance) {
+			return true
+		}
+	}
+	return false
 }
 
 func atrPercent(closes []float64, highs []float64, lows []float64, index int, window int) (float64, bool) {

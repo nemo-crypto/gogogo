@@ -478,26 +478,15 @@ go run ./cmd/papertrade \
   -quantity 0.01
 ```
 
-持续运行短线 paper 策略时开启 `-watch`。该模式不会向交易所提交真实订单，只会用真实行情驱动本地模拟下单和结算：
+持续运行短线 paper 策略时开启 `-watch`。该模式不会向交易所提交真实订单，只会用真实行情驱动本地模拟下单和结算。前期小资金可以用 `-profile aggressive` 切到更主动的合约短线档，手动传入的参数会覆盖 profile 默认值：
 
 ```bash
 go run ./cmd/papertrade \
   -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
   -account paper \
-  -strategy-type scalp-tpsl \
-  -market spot \
+  -profile aggressive \
   -symbol BTCUSDT \
-  -interval 1m \
-  -fast 3 \
-  -slow 9 \
-  -take-profit-pct 0.35 \
-  -stop-loss-pct 0.2 \
-  -cooldown-bars 1 \
-  -fee-rate 0.001 \
-  -slippage-rate 0.0005 \
-  -equity 10000 \
-  -quantity 0.01 \
-  -leverage 1 \
+  -equity 1000 \
   -watch \
   -poll-interval 15s
 ```

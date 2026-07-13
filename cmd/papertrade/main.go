@@ -29,11 +29,44 @@ func main() {
 	}
 }
 
+type paperProfileFlags struct {
+	strategyID    *string
+	market        *string
+	interval      *string
+	strategyType  *string
+	fast          *int
+	slow          *int
+	takeProfitPct *float64
+	stopLossPct   *float64
+	cooldownBars  *int
+	minSpreadPct  *float64
+	confirmBars   *int
+	atrWindow     *int
+	minATRPct     *float64
+	maxATRPct     *float64
+	volumeWindow  *int
+	minVolume     *float64
+	maxExtension  *float64
+	pullbackBars  *int
+	pullbackTol   *float64
+	feeRate       *float64
+	slippageRate  *float64
+	riskPct       *float64
+	maxNotional   *float64
+	maxMargin     *float64
+	maxBalanceUse *float64
+	minLiqDist    *float64
+	maxOrderRisk  *float64
+	maxLeverage   *float64
+	leverage      *float64
+}
+
 func run() error {
 	var (
 		dsn           = flag.String("dsn", env("DATABASE_DSN", "/Users/guilinzhou/Desktop/test-nemo/gogogo/data.db"), "sqlite database path")
 		accountID     = flag.String("account", "paper", "paper account id")
 		strategyID    = flag.String("strategy", "sma-paper", "strategy id")
+		profile       = flag.String("profile", "", "paper strategy profile: aggressive or empty/manual")
 		exchange      = flag.String("exchange", "binance", "exchange")
 		market        = flag.String("market", "spot", "market type")
 		symbol        = flag.String("symbol", "BTCUSDT", "symbol")
@@ -53,6 +86,9 @@ func run() error {
 		maxATRPct     = flag.Float64("max-atr-pct", 0, "maximum ATR pct allowed to enter scalp-tpsl trades")
 		volumeWindow  = flag.Int("volume-window", 0, "volume average window for scalp-tpsl volume filter")
 		minVolume     = flag.Float64("min-volume-ratio", 0, "minimum current volume / average volume required to enter scalp-tpsl trades")
+		maxExtension  = flag.Float64("max-entry-extension-pct", 0, "maximum entry distance from fast SMA pct; zero disables")
+		pullbackBars  = flag.Int("pullback-lookback", 0, "recent bars that must touch fast SMA zone before entry; zero disables")
+		pullbackTol   = flag.Float64("pullback-tolerance-pct", 0, "pullback touch tolerance pct around fast SMA")
 		feeRate       = flag.Float64("fee-rate", 0.001, "fee rate per trade side")
 		slippageRate  = flag.Float64("slippage-rate", 0.0005, "slippage rate per trade side")
 		equity        = flag.Float64("equity", 10000, "paper account equity")
@@ -70,6 +106,40 @@ func run() error {
 		pollEvery     = flag.Duration("poll-interval", 15*time.Second, "poll interval when -watch is enabled")
 	)
 	flag.Parse()
+	setFlags := visitedFlagNames()
+	if err := applyPaperProfile(*profile, setFlags, paperProfileFlags{
+		strategyID:    strategyID,
+		market:        market,
+		interval:      interval,
+		strategyType:  strategyType,
+		fast:          fast,
+		slow:          slow,
+		takeProfitPct: takeProfitPct,
+		stopLossPct:   stopLossPct,
+		cooldownBars:  cooldownBars,
+		minSpreadPct:  minSpreadPct,
+		confirmBars:   confirmBars,
+		atrWindow:     atrWindow,
+		minATRPct:     minATRPct,
+		maxATRPct:     maxATRPct,
+		volumeWindow:  volumeWindow,
+		minVolume:     minVolume,
+		maxExtension:  maxExtension,
+		pullbackBars:  pullbackBars,
+		pullbackTol:   pullbackTol,
+		feeRate:       feeRate,
+		slippageRate:  slippageRate,
+		riskPct:       riskPct,
+		maxNotional:   maxNotional,
+		maxMargin:     maxMargin,
+		maxBalanceUse: maxBalanceUse,
+		minLiqDist:    minLiqDist,
+		maxOrderRisk:  maxOrderRisk,
+		maxLeverage:   maxLeverage,
+		leverage:      leverage,
+	}); err != nil {
+		return err
+	}
 	actualStrategyID := *strategyID
 	if actualStrategyID == "sma-paper" && strings.EqualFold(*strategyType, "scalp-tpsl") {
 		actualStrategyID = "scalp-tpsl-paper"
@@ -96,43 +166,47 @@ func run() error {
 	}
 
 	config := paperRunConfig{
-		AccountID:         *accountID,
-		StrategyID:        actualStrategyID,
-		Exchange:          *exchange,
-		MarketType:        *market,
-		Symbol:            *symbol,
-		Interval:          *interval,
-		Start:             startTime,
-		End:               endTime,
-		StrategyType:      *strategyType,
-		FastWindow:        *fast,
-		SlowWindow:        *slow,
-		TakeProfitPct:     *takeProfitPct,
-		StopLossPct:       *stopLossPct,
-		CooldownBars:      *cooldownBars,
-		FeeRate:           *feeRate,
-		SlippageRate:      *slippageRate,
-		MinTrendSpreadPct: *minSpreadPct,
-		ConfirmBars:       *confirmBars,
-		ATRWindow:         *atrWindow,
-		MinATRPct:         *minATRPct,
-		MaxATRPct:         *maxATRPct,
-		VolumeWindow:      *volumeWindow,
-		MinVolumeRatio:    *minVolume,
-		Equity:            *equity,
-		Quantity:          *quantity,
-		RiskPct:           *riskPct,
-		MaxNotionalPct:    *maxNotional,
-		MaxMarginPct:      *maxMargin,
-		MaxBalanceUsePct:  *maxBalanceUse,
-		MinLiqDistancePct: *minLiqDist,
-		MaintMarginPct:    *maintMargin,
-		MaxOrderRiskPct:   *maxOrderRisk,
-		MaxLeverage:       *maxLeverage,
-		Leverage:          *leverage,
-		Watch:             *watch,
-		PollInterval:      *pollEvery,
-		LookbackCandles:   120,
+		AccountID:            *accountID,
+		StrategyID:           actualStrategyID,
+		Profile:              normalizedPaperProfile(*profile),
+		Exchange:             *exchange,
+		MarketType:           *market,
+		Symbol:               *symbol,
+		Interval:             *interval,
+		Start:                startTime,
+		End:                  endTime,
+		StrategyType:         *strategyType,
+		FastWindow:           *fast,
+		SlowWindow:           *slow,
+		TakeProfitPct:        *takeProfitPct,
+		StopLossPct:          *stopLossPct,
+		CooldownBars:         *cooldownBars,
+		FeeRate:              *feeRate,
+		SlippageRate:         *slippageRate,
+		MinTrendSpreadPct:    *minSpreadPct,
+		ConfirmBars:          *confirmBars,
+		ATRWindow:            *atrWindow,
+		MinATRPct:            *minATRPct,
+		MaxATRPct:            *maxATRPct,
+		VolumeWindow:         *volumeWindow,
+		MinVolumeRatio:       *minVolume,
+		MaxEntryExtensionPct: *maxExtension,
+		PullbackLookback:     *pullbackBars,
+		PullbackTolerancePct: *pullbackTol,
+		Equity:               *equity,
+		Quantity:             *quantity,
+		RiskPct:              *riskPct,
+		MaxNotionalPct:       *maxNotional,
+		MaxMarginPct:         *maxMargin,
+		MaxBalanceUsePct:     *maxBalanceUse,
+		MinLiqDistancePct:    *minLiqDist,
+		MaintMarginPct:       *maintMargin,
+		MaxOrderRiskPct:      *maxOrderRisk,
+		MaxLeverage:          *maxLeverage,
+		Leverage:             *leverage,
+		Watch:                *watch,
+		PollInterval:         *pollEvery,
+		LookbackCandles:      120,
 	}
 
 	if config.Watch {
@@ -142,44 +216,125 @@ func run() error {
 	return runPaperStrategyOnce(ctx, db, config)
 }
 
+func visitedFlagNames() map[string]struct{} {
+	visited := make(map[string]struct{})
+	flag.Visit(func(f *flag.Flag) {
+		visited[f.Name] = struct{}{}
+	})
+	return visited
+}
+
+func applyPaperProfile(profile string, visited map[string]struct{}, flags paperProfileFlags) error {
+	switch normalizedPaperProfile(profile) {
+	case "":
+		return nil
+	case "aggressive":
+		setStringFlag(visited, "strategy", flags.strategyID, "perp-trend-scalp-aggressive-paper")
+		setStringFlag(visited, "market", flags.market, "perpetual")
+		setStringFlag(visited, "interval", flags.interval, "1m")
+		setStringFlag(visited, "strategy-type", flags.strategyType, "scalp-tpsl")
+		setIntFlag(visited, "fast", flags.fast, 3)
+		setIntFlag(visited, "slow", flags.slow, 12)
+		setFloatFlag(visited, "take-profit-pct", flags.takeProfitPct, 0.65)
+		setFloatFlag(visited, "stop-loss-pct", flags.stopLossPct, 0.25)
+		setIntFlag(visited, "cooldown-bars", flags.cooldownBars, 1)
+		setFloatFlag(visited, "min-trend-spread-pct", flags.minSpreadPct, 0.03)
+		setIntFlag(visited, "confirm-bars", flags.confirmBars, 1)
+		setIntFlag(visited, "atr-window", flags.atrWindow, 14)
+		setFloatFlag(visited, "min-atr-pct", flags.minATRPct, 0.08)
+		setFloatFlag(visited, "max-atr-pct", flags.maxATRPct, 1.6)
+		setIntFlag(visited, "volume-window", flags.volumeWindow, 20)
+		setFloatFlag(visited, "min-volume-ratio", flags.minVolume, 1.15)
+		setFloatFlag(visited, "max-entry-extension-pct", flags.maxExtension, 0.18)
+		setIntFlag(visited, "pullback-lookback", flags.pullbackBars, 5)
+		setFloatFlag(visited, "pullback-tolerance-pct", flags.pullbackTol, 0.06)
+		setFloatFlag(visited, "fee-rate", flags.feeRate, 0.0005)
+		setFloatFlag(visited, "slippage-rate", flags.slippageRate, 0.0005)
+		setFloatFlag(visited, "risk-pct", flags.riskPct, 2)
+		setFloatFlag(visited, "max-notional-pct", flags.maxNotional, 220)
+		setFloatFlag(visited, "max-margin-pct", flags.maxMargin, 65)
+		setFloatFlag(visited, "max-balance-use-pct", flags.maxBalanceUse, 90)
+		setFloatFlag(visited, "min-liquidation-distance-pct", flags.minLiqDist, 15)
+		setFloatFlag(visited, "max-order-risk-pct", flags.maxOrderRisk, 2.5)
+		setFloatFlag(visited, "max-leverage", flags.maxLeverage, 3)
+		setFloatFlag(visited, "leverage", flags.leverage, 3)
+		return nil
+	default:
+		return fmt.Errorf("unsupported paper profile %q", profile)
+	}
+}
+
+func normalizedPaperProfile(profile string) string {
+	switch strings.ToLower(strings.TrimSpace(profile)) {
+	case "", "manual", "none", "default":
+		return ""
+	case "aggressive", "small-aggressive", "small_aggressive", "small":
+		return "aggressive"
+	default:
+		return strings.ToLower(strings.TrimSpace(profile))
+	}
+}
+
+func setStringFlag(visited map[string]struct{}, name string, target *string, value string) {
+	if _, ok := visited[name]; !ok {
+		*target = value
+	}
+}
+
+func setIntFlag(visited map[string]struct{}, name string, target *int, value int) {
+	if _, ok := visited[name]; !ok {
+		*target = value
+	}
+}
+
+func setFloatFlag(visited map[string]struct{}, name string, target *float64, value float64) {
+	if _, ok := visited[name]; !ok {
+		*target = value
+	}
+}
+
 type paperRunConfig struct {
-	AccountID         string
-	StrategyID        string
-	Exchange          string
-	MarketType        string
-	Symbol            string
-	Interval          string
-	Start             time.Time
-	End               time.Time
-	StrategyType      string
-	FastWindow        int
-	SlowWindow        int
-	TakeProfitPct     float64
-	StopLossPct       float64
-	CooldownBars      int
-	FeeRate           float64
-	SlippageRate      float64
-	MinTrendSpreadPct float64
-	ConfirmBars       int
-	ATRWindow         int
-	MinATRPct         float64
-	MaxATRPct         float64
-	VolumeWindow      int
-	MinVolumeRatio    float64
-	Equity            float64
-	Quantity          float64
-	RiskPct           float64
-	MaxNotionalPct    float64
-	MaxMarginPct      float64
-	MaxBalanceUsePct  float64
-	MinLiqDistancePct float64
-	MaintMarginPct    float64
-	MaxOrderRiskPct   float64
-	MaxLeverage       float64
-	Leverage          float64
-	Watch             bool
-	PollInterval      time.Duration
-	LookbackCandles   int
+	AccountID            string
+	StrategyID           string
+	Profile              string
+	Exchange             string
+	MarketType           string
+	Symbol               string
+	Interval             string
+	Start                time.Time
+	End                  time.Time
+	StrategyType         string
+	FastWindow           int
+	SlowWindow           int
+	TakeProfitPct        float64
+	StopLossPct          float64
+	CooldownBars         int
+	FeeRate              float64
+	SlippageRate         float64
+	MinTrendSpreadPct    float64
+	ConfirmBars          int
+	ATRWindow            int
+	MinATRPct            float64
+	MaxATRPct            float64
+	VolumeWindow         int
+	MinVolumeRatio       float64
+	MaxEntryExtensionPct float64
+	PullbackLookback     int
+	PullbackTolerancePct float64
+	Equity               float64
+	Quantity             float64
+	RiskPct              float64
+	MaxNotionalPct       float64
+	MaxMarginPct         float64
+	MaxBalanceUsePct     float64
+	MinLiqDistancePct    float64
+	MaintMarginPct       float64
+	MaxOrderRiskPct      float64
+	MaxLeverage          float64
+	Leverage             float64
+	Watch                bool
+	PollInterval         time.Duration
+	LookbackCandles      int
 }
 
 func watchPaperStrategy(ctx context.Context, db *sql.DB, config paperRunConfig) error {
@@ -223,22 +378,25 @@ func runPaperStrategyOnce(ctx context.Context, db *sql.DB, config paperRunConfig
 		return fmt.Errorf("list candles: %w", err)
 	}
 	result, err := runPaperBacktest(candles, paperStrategyConfig{
-		StrategyType:      config.StrategyType,
-		MarketType:        config.MarketType,
-		FastWindow:        config.FastWindow,
-		SlowWindow:        config.SlowWindow,
-		TakeProfitPct:     config.TakeProfitPct,
-		StopLossPct:       config.StopLossPct,
-		CooldownBars:      config.CooldownBars,
-		FeeRate:           config.FeeRate,
-		SlippageRate:      config.SlippageRate,
-		MinTrendSpreadPct: config.MinTrendSpreadPct,
-		ConfirmBars:       config.ConfirmBars,
-		ATRWindow:         config.ATRWindow,
-		MinATRPct:         config.MinATRPct,
-		MaxATRPct:         config.MaxATRPct,
-		VolumeWindow:      config.VolumeWindow,
-		MinVolumeRatio:    config.MinVolumeRatio,
+		StrategyType:         config.StrategyType,
+		MarketType:           config.MarketType,
+		FastWindow:           config.FastWindow,
+		SlowWindow:           config.SlowWindow,
+		TakeProfitPct:        config.TakeProfitPct,
+		StopLossPct:          config.StopLossPct,
+		CooldownBars:         config.CooldownBars,
+		FeeRate:              config.FeeRate,
+		SlippageRate:         config.SlippageRate,
+		MinTrendSpreadPct:    config.MinTrendSpreadPct,
+		ConfirmBars:          config.ConfirmBars,
+		ATRWindow:            config.ATRWindow,
+		MinATRPct:            config.MinATRPct,
+		MaxATRPct:            config.MaxATRPct,
+		VolumeWindow:         config.VolumeWindow,
+		MinVolumeRatio:       config.MinVolumeRatio,
+		MaxEntryExtensionPct: config.MaxEntryExtensionPct,
+		PullbackLookback:     config.PullbackLookback,
+		PullbackTolerancePct: config.PullbackTolerancePct,
 	})
 	if err != nil {
 		return fmt.Errorf("run paper strategy: %w", err)
@@ -261,32 +419,36 @@ func runPaperStrategyOnce(ctx context.Context, db *sql.DB, config paperRunConfig
 
 	strategyRepo := strategy.NewSQLiteRepository(db)
 	configJSON, err := marshalJSON(map[string]any{
-		"strategy_type":          normalizedStrategyType(config.StrategyType),
-		"fast":                   config.FastWindow,
-		"slow":                   config.SlowWindow,
-		"symbol":                 config.Symbol,
-		"take_profit_pct":        config.TakeProfitPct,
-		"stop_loss_pct":          config.StopLossPct,
-		"cooldown_bars":          config.CooldownBars,
-		"fee_rate":               config.FeeRate,
-		"slippage_rate":          config.SlippageRate,
-		"market_type":            config.MarketType,
-		"min_trend_spread_pct":   config.MinTrendSpreadPct,
-		"confirm_bars":           config.ConfirmBars,
-		"atr_window":             config.ATRWindow,
-		"min_atr_pct":            config.MinATRPct,
-		"max_atr_pct":            config.MaxATRPct,
-		"volume_window":          config.VolumeWindow,
-		"min_volume_ratio":       config.MinVolumeRatio,
-		"risk_pct":               config.RiskPct,
-		"max_notional_pct":       config.MaxNotionalPct,
-		"max_margin_pct":         config.MaxMarginPct,
-		"max_balance_use_pct":    config.MaxBalanceUsePct,
-		"min_liq_distance_pct":   config.MinLiqDistancePct,
-		"maintenance_margin_pct": config.MaintMarginPct,
-		"max_order_risk_pct":     config.MaxOrderRiskPct,
-		"max_leverage":           config.MaxLeverage,
-		"leverage":               config.Leverage,
+		"strategy_type":           normalizedStrategyType(config.StrategyType),
+		"profile":                 config.Profile,
+		"fast":                    config.FastWindow,
+		"slow":                    config.SlowWindow,
+		"symbol":                  config.Symbol,
+		"take_profit_pct":         config.TakeProfitPct,
+		"stop_loss_pct":           config.StopLossPct,
+		"cooldown_bars":           config.CooldownBars,
+		"fee_rate":                config.FeeRate,
+		"slippage_rate":           config.SlippageRate,
+		"market_type":             config.MarketType,
+		"min_trend_spread_pct":    config.MinTrendSpreadPct,
+		"confirm_bars":            config.ConfirmBars,
+		"atr_window":              config.ATRWindow,
+		"min_atr_pct":             config.MinATRPct,
+		"max_atr_pct":             config.MaxATRPct,
+		"volume_window":           config.VolumeWindow,
+		"min_volume_ratio":        config.MinVolumeRatio,
+		"max_entry_extension_pct": config.MaxEntryExtensionPct,
+		"pullback_lookback":       config.PullbackLookback,
+		"pullback_tolerance_pct":  config.PullbackTolerancePct,
+		"risk_pct":                config.RiskPct,
+		"max_notional_pct":        config.MaxNotionalPct,
+		"max_margin_pct":          config.MaxMarginPct,
+		"max_balance_use_pct":     config.MaxBalanceUsePct,
+		"min_liq_distance_pct":    config.MinLiqDistancePct,
+		"maintenance_margin_pct":  config.MaintMarginPct,
+		"max_order_risk_pct":      config.MaxOrderRiskPct,
+		"max_leverage":            config.MaxLeverage,
+		"leverage":                config.Leverage,
 	})
 	if err != nil {
 		return fmt.Errorf("encode strategy config: %w", err)
@@ -331,48 +493,55 @@ func runPaperStrategyOnce(ctx context.Context, db *sql.DB, config paperRunConfig
 		return fmt.Errorf("start strategy run: %w", err)
 	}
 	signal := paperSignalAction(candles, result, paperStrategyConfig{
-		StrategyType:      config.StrategyType,
-		MarketType:        config.MarketType,
-		FastWindow:        config.FastWindow,
-		SlowWindow:        config.SlowWindow,
-		TakeProfitPct:     config.TakeProfitPct,
-		StopLossPct:       config.StopLossPct,
-		MinTrendSpreadPct: config.MinTrendSpreadPct,
-		ConfirmBars:       config.ConfirmBars,
-		ATRWindow:         config.ATRWindow,
-		MinATRPct:         config.MinATRPct,
-		MaxATRPct:         config.MaxATRPct,
-		VolumeWindow:      config.VolumeWindow,
-		MinVolumeRatio:    config.MinVolumeRatio,
+		StrategyType:         config.StrategyType,
+		MarketType:           config.MarketType,
+		FastWindow:           config.FastWindow,
+		SlowWindow:           config.SlowWindow,
+		TakeProfitPct:        config.TakeProfitPct,
+		StopLossPct:          config.StopLossPct,
+		MinTrendSpreadPct:    config.MinTrendSpreadPct,
+		ConfirmBars:          config.ConfirmBars,
+		ATRWindow:            config.ATRWindow,
+		MinATRPct:            config.MinATRPct,
+		MaxATRPct:            config.MaxATRPct,
+		VolumeWindow:         config.VolumeWindow,
+		MinVolumeRatio:       config.MinVolumeRatio,
+		MaxEntryExtensionPct: config.MaxEntryExtensionPct,
+		PullbackLookback:     config.PullbackLookback,
+		PullbackTolerancePct: config.PullbackTolerancePct,
 	})
 	action := signal.Action
 	if paperState.Open {
 		action = strategy.SignalHold
 	}
 	rawFeaturesJSON, err := marshalJSON(map[string]any{
-		"strategy_name":        result.StrategyName,
-		"total_return_pct":     result.TotalReturnPct,
-		"excess_return_pct":    result.ExcessReturnPct,
-		"max_drawdown_pct":     result.MaxDrawdownPct,
-		"trade_count":          len(result.Trades),
-		"win_rate_pct":         result.WinRatePct,
-		"backtest_run_id":      backtestRunID,
-		"take_profit_pct":      config.TakeProfitPct,
-		"stop_loss_pct":        config.StopLossPct,
-		"min_trend_spread_pct": config.MinTrendSpreadPct,
-		"confirm_bars":         config.ConfirmBars,
-		"atr_window":           config.ATRWindow,
-		"min_atr_pct":          config.MinATRPct,
-		"max_atr_pct":          config.MaxATRPct,
-		"volume_window":        config.VolumeWindow,
-		"min_volume_ratio":     config.MinVolumeRatio,
-		"risk_pct":             config.RiskPct,
-		"max_notional_pct":     config.MaxNotionalPct,
-		"max_margin_pct":       config.MaxMarginPct,
-		"max_balance_use_pct":  config.MaxBalanceUsePct,
-		"min_liq_distance_pct": config.MinLiqDistancePct,
-		"latest_signal_input":  normalizedStrategyType(config.StrategyType),
-		"position_side":        signal.PositionSide,
+		"strategy_name":           result.StrategyName,
+		"total_return_pct":        result.TotalReturnPct,
+		"excess_return_pct":       result.ExcessReturnPct,
+		"max_drawdown_pct":        result.MaxDrawdownPct,
+		"trade_count":             len(result.Trades),
+		"win_rate_pct":            result.WinRatePct,
+		"backtest_run_id":         backtestRunID,
+		"profile":                 config.Profile,
+		"take_profit_pct":         config.TakeProfitPct,
+		"stop_loss_pct":           config.StopLossPct,
+		"min_trend_spread_pct":    config.MinTrendSpreadPct,
+		"confirm_bars":            config.ConfirmBars,
+		"atr_window":              config.ATRWindow,
+		"min_atr_pct":             config.MinATRPct,
+		"max_atr_pct":             config.MaxATRPct,
+		"volume_window":           config.VolumeWindow,
+		"min_volume_ratio":        config.MinVolumeRatio,
+		"max_entry_extension_pct": config.MaxEntryExtensionPct,
+		"pullback_lookback":       config.PullbackLookback,
+		"pullback_tolerance_pct":  config.PullbackTolerancePct,
+		"risk_pct":                config.RiskPct,
+		"max_notional_pct":        config.MaxNotionalPct,
+		"max_margin_pct":          config.MaxMarginPct,
+		"max_balance_use_pct":     config.MaxBalanceUsePct,
+		"min_liq_distance_pct":    config.MinLiqDistancePct,
+		"latest_signal_input":     normalizedStrategyType(config.StrategyType),
+		"position_side":           signal.PositionSide,
 	})
 	if err != nil {
 		return fmt.Errorf("encode signal features: %w", err)
@@ -391,24 +560,28 @@ func runPaperStrategyOnce(ctx context.Context, db *sql.DB, config paperRunConfig
 		return fmt.Errorf("save signal: %w", err)
 	}
 	metricsJSON, err := marshalJSON(map[string]any{
-		"total_return_pct":     result.TotalReturnPct,
-		"excess_return_pct":    result.ExcessReturnPct,
-		"trades":               len(result.Trades),
-		"win_rate_pct":         result.WinRatePct,
-		"take_profit_pct":      config.TakeProfitPct,
-		"stop_loss_pct":        config.StopLossPct,
-		"min_trend_spread_pct": config.MinTrendSpreadPct,
-		"confirm_bars":         config.ConfirmBars,
-		"atr_window":           config.ATRWindow,
-		"min_atr_pct":          config.MinATRPct,
-		"max_atr_pct":          config.MaxATRPct,
-		"volume_window":        config.VolumeWindow,
-		"min_volume_ratio":     config.MinVolumeRatio,
-		"risk_pct":             config.RiskPct,
-		"max_notional_pct":     config.MaxNotionalPct,
-		"max_margin_pct":       config.MaxMarginPct,
-		"max_balance_use_pct":  config.MaxBalanceUsePct,
-		"min_liq_distance_pct": config.MinLiqDistancePct,
+		"total_return_pct":        result.TotalReturnPct,
+		"excess_return_pct":       result.ExcessReturnPct,
+		"trades":                  len(result.Trades),
+		"win_rate_pct":            result.WinRatePct,
+		"profile":                 config.Profile,
+		"take_profit_pct":         config.TakeProfitPct,
+		"stop_loss_pct":           config.StopLossPct,
+		"min_trend_spread_pct":    config.MinTrendSpreadPct,
+		"confirm_bars":            config.ConfirmBars,
+		"atr_window":              config.ATRWindow,
+		"min_atr_pct":             config.MinATRPct,
+		"max_atr_pct":             config.MaxATRPct,
+		"volume_window":           config.VolumeWindow,
+		"min_volume_ratio":        config.MinVolumeRatio,
+		"max_entry_extension_pct": config.MaxEntryExtensionPct,
+		"pullback_lookback":       config.PullbackLookback,
+		"pullback_tolerance_pct":  config.PullbackTolerancePct,
+		"risk_pct":                config.RiskPct,
+		"max_notional_pct":        config.MaxNotionalPct,
+		"max_margin_pct":          config.MaxMarginPct,
+		"max_balance_use_pct":     config.MaxBalanceUsePct,
+		"min_liq_distance_pct":    config.MinLiqDistancePct,
 	})
 	if err != nil {
 		return fmt.Errorf("encode performance metrics: %w", err)
@@ -493,22 +666,25 @@ func runPaperStrategyOnce(ctx context.Context, db *sql.DB, config paperRunConfig
 }
 
 type paperStrategyConfig struct {
-	StrategyType      string
-	FastWindow        int
-	SlowWindow        int
-	TakeProfitPct     float64
-	StopLossPct       float64
-	CooldownBars      int
-	FeeRate           float64
-	SlippageRate      float64
-	MarketType        string
-	MinTrendSpreadPct float64
-	ConfirmBars       int
-	ATRWindow         int
-	MinATRPct         float64
-	MaxATRPct         float64
-	VolumeWindow      int
-	MinVolumeRatio    float64
+	StrategyType         string
+	FastWindow           int
+	SlowWindow           int
+	TakeProfitPct        float64
+	StopLossPct          float64
+	CooldownBars         int
+	FeeRate              float64
+	SlippageRate         float64
+	MarketType           string
+	MinTrendSpreadPct    float64
+	ConfirmBars          int
+	ATRWindow            int
+	MinATRPct            float64
+	MaxATRPct            float64
+	VolumeWindow         int
+	MinVolumeRatio       float64
+	MaxEntryExtensionPct float64
+	PullbackLookback     int
+	PullbackTolerancePct float64
 }
 
 type paperSettleRequest struct {
@@ -1088,21 +1264,24 @@ func runPaperBacktest(candles []marketdata.Candle, config paperStrategyConfig) (
 	switch normalizedStrategyType(config.StrategyType) {
 	case "scalp-tpsl":
 		return backtest.RunScalpTPSL(candles, backtest.ScalpTPSLConfig{
-			FastWindow:        config.FastWindow,
-			SlowWindow:        config.SlowWindow,
-			TakeProfitPct:     config.TakeProfitPct,
-			StopLossPct:       config.StopLossPct,
-			CooldownBars:      config.CooldownBars,
-			FeeRate:           config.FeeRate,
-			SlippageRate:      config.SlippageRate,
-			AllowShort:        strings.EqualFold(config.MarketType, "perpetual"),
-			MinTrendSpreadPct: config.MinTrendSpreadPct,
-			ConfirmBars:       config.ConfirmBars,
-			ATRWindow:         config.ATRWindow,
-			MinATRPct:         config.MinATRPct,
-			MaxATRPct:         config.MaxATRPct,
-			VolumeWindow:      config.VolumeWindow,
-			MinVolumeRatio:    config.MinVolumeRatio,
+			FastWindow:           config.FastWindow,
+			SlowWindow:           config.SlowWindow,
+			TakeProfitPct:        config.TakeProfitPct,
+			StopLossPct:          config.StopLossPct,
+			CooldownBars:         config.CooldownBars,
+			FeeRate:              config.FeeRate,
+			SlippageRate:         config.SlippageRate,
+			AllowShort:           strings.EqualFold(config.MarketType, "perpetual"),
+			MinTrendSpreadPct:    config.MinTrendSpreadPct,
+			ConfirmBars:          config.ConfirmBars,
+			ATRWindow:            config.ATRWindow,
+			MinATRPct:            config.MinATRPct,
+			MaxATRPct:            config.MaxATRPct,
+			VolumeWindow:         config.VolumeWindow,
+			MinVolumeRatio:       config.MinVolumeRatio,
+			MaxEntryExtensionPct: config.MaxEntryExtensionPct,
+			PullbackLookback:     config.PullbackLookback,
+			PullbackTolerancePct: config.PullbackTolerancePct,
 		})
 	case "sma":
 		return backtest.RunSMACrossover(candles, backtest.SMAConfig{
@@ -1141,21 +1320,24 @@ func paperSignalAction(candles []marketdata.Candle, result backtest.Result, conf
 
 func latestScalpSignal(candles []marketdata.Candle, config paperStrategyConfig) paperSignal {
 	side, ok, err := backtest.LatestScalpTPSLSignal(candles, backtest.ScalpTPSLConfig{
-		FastWindow:        config.FastWindow,
-		SlowWindow:        config.SlowWindow,
-		TakeProfitPct:     config.TakeProfitPct,
-		StopLossPct:       config.StopLossPct,
-		CooldownBars:      config.CooldownBars,
-		FeeRate:           config.FeeRate,
-		SlippageRate:      config.SlippageRate,
-		AllowShort:        strings.EqualFold(config.MarketType, "perpetual"),
-		MinTrendSpreadPct: config.MinTrendSpreadPct,
-		ConfirmBars:       config.ConfirmBars,
-		ATRWindow:         config.ATRWindow,
-		MinATRPct:         config.MinATRPct,
-		MaxATRPct:         config.MaxATRPct,
-		VolumeWindow:      config.VolumeWindow,
-		MinVolumeRatio:    config.MinVolumeRatio,
+		FastWindow:           config.FastWindow,
+		SlowWindow:           config.SlowWindow,
+		TakeProfitPct:        config.TakeProfitPct,
+		StopLossPct:          config.StopLossPct,
+		CooldownBars:         config.CooldownBars,
+		FeeRate:              config.FeeRate,
+		SlippageRate:         config.SlippageRate,
+		AllowShort:           strings.EqualFold(config.MarketType, "perpetual"),
+		MinTrendSpreadPct:    config.MinTrendSpreadPct,
+		ConfirmBars:          config.ConfirmBars,
+		ATRWindow:            config.ATRWindow,
+		MinATRPct:            config.MinATRPct,
+		MaxATRPct:            config.MaxATRPct,
+		VolumeWindow:         config.VolumeWindow,
+		MinVolumeRatio:       config.MinVolumeRatio,
+		MaxEntryExtensionPct: config.MaxEntryExtensionPct,
+		PullbackLookback:     config.PullbackLookback,
+		PullbackTolerancePct: config.PullbackTolerancePct,
 	})
 	if err != nil || !ok {
 		return paperSignal{Action: strategy.SignalHold}

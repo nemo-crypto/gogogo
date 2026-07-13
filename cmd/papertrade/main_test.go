@@ -219,6 +219,94 @@ func TestPaperRiskAccountSnapshotUsesCurrentState(t *testing.T) {
 	}
 }
 
+func TestApplyPaperProfileAggressiveDefaultsAndOverrides(t *testing.T) {
+	strategyID := "sma-paper"
+	market := "spot"
+	interval := "1h"
+	strategyType := "sma"
+	fast := 12
+	slow := 48
+	takeProfitPct := 0.8
+	stopLossPct := 0.4
+	cooldownBars := 0
+	minSpreadPct := 0.0
+	confirmBars := 1
+	atrWindow := 0
+	minATRPct := 0.0
+	maxATRPct := 0.0
+	volumeWindow := 0
+	minVolume := 0.0
+	maxExtension := 0.0
+	pullbackBars := 0
+	pullbackTol := 0.0
+	feeRate := 0.001
+	slippageRate := 0.0005
+	riskPct := 0.0
+	maxNotional := 100.0
+	maxMargin := 35.0
+	maxBalanceUse := 80.0
+	minLiqDist := 10.0
+	maxOrderRisk := 1.0
+	maxLeverage := 3.0
+	leverage := 1.0
+
+	err := applyPaperProfile("aggressive", map[string]struct{}{"leverage": {}}, paperProfileFlags{
+		strategyID:    &strategyID,
+		market:        &market,
+		interval:      &interval,
+		strategyType:  &strategyType,
+		fast:          &fast,
+		slow:          &slow,
+		takeProfitPct: &takeProfitPct,
+		stopLossPct:   &stopLossPct,
+		cooldownBars:  &cooldownBars,
+		minSpreadPct:  &minSpreadPct,
+		confirmBars:   &confirmBars,
+		atrWindow:     &atrWindow,
+		minATRPct:     &minATRPct,
+		maxATRPct:     &maxATRPct,
+		volumeWindow:  &volumeWindow,
+		minVolume:     &minVolume,
+		maxExtension:  &maxExtension,
+		pullbackBars:  &pullbackBars,
+		pullbackTol:   &pullbackTol,
+		feeRate:       &feeRate,
+		slippageRate:  &slippageRate,
+		riskPct:       &riskPct,
+		maxNotional:   &maxNotional,
+		maxMargin:     &maxMargin,
+		maxBalanceUse: &maxBalanceUse,
+		minLiqDist:    &minLiqDist,
+		maxOrderRisk:  &maxOrderRisk,
+		maxLeverage:   &maxLeverage,
+		leverage:      &leverage,
+	})
+	if err != nil {
+		t.Fatalf("apply profile: %v", err)
+	}
+	if strategyID != "perp-trend-scalp-aggressive-paper" {
+		t.Fatalf("strategy id = %q", strategyID)
+	}
+	if market != "perpetual" || interval != "1m" || strategyType != "scalp-tpsl" {
+		t.Fatalf("market=%q interval=%q strategy_type=%q, want aggressive perp 1m scalp", market, interval, strategyType)
+	}
+	if fast != 3 || slow != 12 {
+		t.Fatalf("windows = %d/%d, want 3/12", fast, slow)
+	}
+	if !closeEnough(takeProfitPct, 0.65) || !closeEnough(stopLossPct, 0.25) {
+		t.Fatalf("tp/sl = %f/%f, want 0.65/0.25", takeProfitPct, stopLossPct)
+	}
+	if !closeEnough(riskPct, 2) || !closeEnough(maxNotional, 220) {
+		t.Fatalf("risk/notional = %f/%f, want 2/220", riskPct, maxNotional)
+	}
+	if !closeEnough(maxExtension, 0.18) || pullbackBars != 5 || !closeEnough(pullbackTol, 0.06) {
+		t.Fatalf("entry filters = %f/%d/%f", maxExtension, pullbackBars, pullbackTol)
+	}
+	if !closeEnough(leverage, 1) {
+		t.Fatalf("leverage = %f, want manual override 1", leverage)
+	}
+}
+
 func testCandles(start time.Time, prices []string) []marketdata.Candle {
 	candles := make([]marketdata.Candle, 0, len(prices))
 	for i, price := range prices {
