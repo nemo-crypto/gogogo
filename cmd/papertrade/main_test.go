@@ -75,6 +75,57 @@ func TestPaperExitReasonShortDirection(t *testing.T) {
 	}
 }
 
+func TestPaperTrendExitReason(t *testing.T) {
+	start := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	candles := testCandles(start, []string{"100", "99", "101", "103"})
+	config := paperStrategyConfig{
+		StrategyType: "scalp-tpsl",
+		MarketType:   "perpetual",
+		FastWindow:   2,
+		SlowWindow:   3,
+	}
+
+	shortPosition := portfolio.PaperPositionRecord{PositionSide: "short"}
+	if reason := paperTrendExitReason(shortPosition, candles, config); reason != "trend_reversal" {
+		t.Fatalf("short reason = %q, want trend_reversal", reason)
+	}
+
+	longPosition := portfolio.PaperPositionRecord{PositionSide: "long"}
+	if reason := paperTrendExitReason(longPosition, candles, config); reason != "" {
+		t.Fatalf("long reason = %q, want empty", reason)
+	}
+}
+
+func TestPaperPositionNetPnLIncludesRoundTripCosts(t *testing.T) {
+	position := portfolio.PaperPositionRecord{
+		PositionSide: "long",
+		Quantity:     2,
+		EntryPrice:   100,
+	}
+	got := paperPositionNetPnL(position, 110, 0.001, 0.002)
+	want := 20 - 100*2*0.003 - 110*2*0.003
+	if !closeEnough(got, want) {
+		t.Fatalf("net pnl = %f, want %f", got, want)
+	}
+}
+
+func testCandles(start time.Time, prices []string) []marketdata.Candle {
+	candles := make([]marketdata.Candle, 0, len(prices))
+	for i, price := range prices {
+		openTime := start.Add(time.Duration(i) * time.Minute)
+		candles = append(candles, marketdata.Candle{
+			Exchange:   "binance",
+			MarketType: marketdata.MarketTypePerpetual,
+			Symbol:     "BTCUSDT",
+			Interval:   "1m",
+			OpenTime:   openTime,
+			CloseTime:  openTime.Add(time.Minute),
+			Close:      price,
+		})
+	}
+	return candles
+}
+
 func closeEnough(got float64, want float64) bool {
 	return math.Abs(got-want) < 0.0000001
 }

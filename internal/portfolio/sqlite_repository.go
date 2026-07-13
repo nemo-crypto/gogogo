@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -399,6 +400,17 @@ func (r *SQLiteRepository) UpdatePaperPositionMark(ctx context.Context, id int64
 }
 
 func (r *SQLiteRepository) ClosePaperPosition(ctx context.Context, id int64, exitPrice float64, closedAt time.Time) (PaperPositionRecord, error) {
+	return r.closePaperPosition(ctx, id, exitPrice, closedAt, nil)
+}
+
+func (r *SQLiteRepository) ClosePaperPositionWithRealizedPnL(ctx context.Context, id int64, exitPrice float64, closedAt time.Time, realizedPnL float64) (PaperPositionRecord, error) {
+	if math.IsNaN(realizedPnL) || math.IsInf(realizedPnL, 0) {
+		return PaperPositionRecord{}, errors.New("realized pnl must be finite")
+	}
+	return r.closePaperPosition(ctx, id, exitPrice, closedAt, &realizedPnL)
+}
+
+func (r *SQLiteRepository) closePaperPosition(ctx context.Context, id int64, exitPrice float64, closedAt time.Time, realizedPnLOverride *float64) (PaperPositionRecord, error) {
 	if id <= 0 {
 		return PaperPositionRecord{}, errors.New("paper position id is required")
 	}
@@ -416,6 +428,9 @@ func (r *SQLiteRepository) ClosePaperPosition(ctx context.Context, id int64, exi
 		closedAt = time.Now().UTC()
 	}
 	realizedPnL := paperPositionPnL(position, exitPrice)
+	if realizedPnLOverride != nil {
+		realizedPnL = *realizedPnLOverride
+	}
 	_, err = r.db.ExecContext(ctx, `
 	UPDATE paper_positions
 	SET mark_price = ?, realized_pnl = ?, status = ?, closed_at = ?, updated_at = ?

@@ -182,3 +182,49 @@ func TestSQLiteRepositoryPaperPositionLifecycle(t *testing.T) {
 		t.Fatalf("realized pnl = %.4f, want 6", closed.RealizedPnL)
 	}
 }
+
+func TestSQLiteRepositoryClosePaperPositionWithRealizedPnL(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	db.SetMaxOpenConns(1)
+	if err := InitSQLiteSchema(ctx, db); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	repo := NewSQLiteRepository(db)
+	openedAt := time.Date(2026, 7, 13, 1, 0, 0, 0, time.UTC)
+	id, err := repo.OpenPaperPosition(ctx, PaperPositionRecord{
+		AccountID:       "paper",
+		StrategyID:      "scalp-tpsl-perp-paper",
+		Exchange:        "binance",
+		MarketType:      "perpetual",
+		Symbol:          "BTCUSDT",
+		PositionSide:    "short",
+		Quantity:        0.01,
+		EntryPrice:      60000,
+		MarkPrice:       60000,
+		TakeProfitPrice: 59800,
+		StopLossPrice:   60120,
+		OpenedAt:        openedAt,
+	})
+	if err != nil {
+		t.Fatalf("open paper position: %v", err)
+	}
+
+	closed, err := repo.ClosePaperPositionWithRealizedPnL(ctx, id, 59800, openedAt.Add(time.Minute), 1.25)
+	if err != nil {
+		t.Fatalf("close paper position with realized pnl: %v", err)
+	}
+	if closed.Status != PaperPositionClosed {
+		t.Fatalf("status = %q, want closed", closed.Status)
+	}
+	if closed.RealizedPnL != 1.25 {
+		t.Fatalf("realized pnl = %.4f, want 1.25", closed.RealizedPnL)
+	}
+}

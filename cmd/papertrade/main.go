@@ -241,6 +241,12 @@ func runPaperStrategyOnce(ctx context.Context, db *sql.DB, config paperRunConfig
 		Leverage:        config.Leverage,
 		TakeProfitPct:   config.TakeProfitPct,
 		StopLossPct:     config.StopLossPct,
+		FastWindow:      config.FastWindow,
+		SlowWindow:      config.SlowWindow,
+		FeeRate:         config.FeeRate,
+		SlippageRate:    config.SlippageRate,
+		StrategyType:    config.StrategyType,
+		Candles:         candles,
 		AllowPaperState: true,
 	})
 	if err != nil {
@@ -362,13 +368,15 @@ func runPaperStrategyOnce(ctx context.Context, db *sql.DB, config paperRunConfig
 			StopLossPrice:   stopPrice,
 			Equity:          config.Equity,
 			Leverage:        config.Leverage,
+			FeeRate:         config.FeeRate,
+			SlippageRate:    config.SlippageRate,
 			OpenedAt:        latestTime,
 		})
 		if err != nil {
 			return err
 		}
 		fmt.Printf("paper_order_id=%d status=%s decision=%s stop=%.8f take_profit=%.8f\n", dryRun.Order.ID, dryRun.Order.Status, dryRun.Order.RiskDecision, dryRun.Order.StopPrice, dryRun.Order.TakeProfitPrice)
-		fmt.Printf("paper_position_id=%d status=open entry=%.8f mark=%.8f pnl=%.8f\n", opened.ID, opened.EntryPrice, opened.MarkPrice, paperPositionPnL(opened, latestPrice))
+		fmt.Printf("paper_position_id=%d status=open entry=%.8f mark=%.8f pnl=%.8f\n", opened.ID, opened.EntryPrice, opened.MarkPrice, paperPositionNetPnL(opened, latestPrice, config.FeeRate, config.SlippageRate))
 	}
 
 	fmt.Printf("paper_run_id=%d backtest_run_id=%d strategy=%s symbol=%s return_pct=%.4f excess_pct=%.4f drawdown_pct=%.4f trades=%d\n", runID, backtestRunID, config.StrategyID, config.Symbol, result.TotalReturnPct, result.ExcessReturnPct, result.MaxDrawdownPct, len(result.Trades))
@@ -393,12 +401,18 @@ type paperSettleRequest struct {
 	Exchange        string
 	MarketType      string
 	Symbol          string
+	StrategyType    string
 	MarkPrice       float64
 	MarkTime        time.Time
 	Equity          float64
 	Leverage        float64
 	TakeProfitPct   float64
 	StopLossPct     float64
+	FastWindow      int
+	SlowWindow      int
+	FeeRate         float64
+	SlippageRate    float64
+	Candles         []marketdata.Candle
 	AllowPaperState bool
 }
 
@@ -423,6 +437,8 @@ type paperOpenRequest struct {
 	StopLossPrice   float64
 	Equity          float64
 	Leverage        float64
+	FeeRate         float64
+	SlippageRate    float64
 	OpenedAt        time.Time
 }
 
@@ -431,7 +447,7 @@ func settlePaperPosition(ctx context.Context, repo *portfolio.SQLiteRepository, 
 	position, err := repo.LatestOpenPaperPosition(ctx, request.AccountID, request.StrategyID, request.Exchange, request.MarketType, request.Symbol)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			if err := savePaperAccountSnapshots(ctx, repo, request.AccountID, request.Exchange, request.MarketType, request.Symbol, request.Equity, request.Leverage, portfolio.PaperPositionRecord{}, request.MarkPrice, request.MarkTime); err != nil {
+			if err := savePaperAccountSnapshots(ctx, repo, request.AccountID, request.Exchange, request.MarketType, request.Symbol, request.Equity, request.Leverage, portfolio.PaperPositionRecord{}, request.MarkPrice, request.MarkTime, request.FeeRate, request.SlippageRate); err != nil {
 				return paperAccountState{}, err
 			}
 			return state, nil
@@ -440,8 +456,17 @@ func settlePaperPosition(ctx context.Context, repo *portfolio.SQLiteRepository, 
 	}
 
 	exitReason := paperExitReason(position, request.MarkPrice)
+	if exitReason == "" {
+		exitReason = paperTrendExitReason(position, request.Candles, paperStrategyConfig{
+			StrategyType: request.StrategyType,
+			MarketType:   request.MarketType,
+			FastWindow:   request.FastWindow,
+			SlowWindow:   request.SlowWindow,
+		})
+	}
 	if exitReason != "" {
-		closed, err := repo.ClosePaperPosition(ctx, position.ID, request.MarkPrice, request.MarkTime)
+		realizedPnL := paperPositionNetPnL(position, request.MarkPrice, request.FeeRate, request.SlippageRate)
+		closed, err := repo.ClosePaperPositionWithRealizedPnL(ctx, position.ID, request.MarkPrice, request.MarkTime, realizedPnL)
 		if err != nil {
 			return paperAccountState{}, fmt.Errorf("close paper position: %w", err)
 		}
@@ -449,7 +474,7 @@ func settlePaperPosition(ctx context.Context, repo *portfolio.SQLiteRepository, 
 		state.TotalPnL = closed.RealizedPnL
 		state.Equity = request.Equity + state.TotalPnL
 		state.CloseNote = exitReason
-		if err := savePaperAccountSnapshots(ctx, repo, request.AccountID, request.Exchange, request.MarketType, request.Symbol, state.Equity, request.Leverage, portfolio.PaperPositionRecord{}, request.MarkPrice, request.MarkTime); err != nil {
+		if err := savePaperAccountSnapshots(ctx, repo, request.AccountID, request.Exchange, request.MarketType, request.Symbol, state.Equity, request.Leverage, portfolio.PaperPositionRecord{}, request.MarkPrice, request.MarkTime, request.FeeRate, request.SlippageRate); err != nil {
 			return paperAccountState{}, err
 		}
 		fmt.Printf("paper_position_closed id=%d reason=%s exit=%.8f realized_pnl=%.8f\n", closed.ID, exitReason, request.MarkPrice, closed.RealizedPnL)
@@ -462,9 +487,9 @@ func settlePaperPosition(ctx context.Context, repo *portfolio.SQLiteRepository, 
 	position.MarkPrice = request.MarkPrice
 	state.Open = true
 	state.Position = position
-	state.TotalPnL = paperPositionPnL(position, request.MarkPrice)
+	state.TotalPnL = paperPositionNetPnL(position, request.MarkPrice, request.FeeRate, request.SlippageRate)
 	state.Equity = request.Equity + state.TotalPnL
-	if err := savePaperAccountSnapshots(ctx, repo, request.AccountID, request.Exchange, request.MarketType, request.Symbol, state.Equity, request.Leverage, position, request.MarkPrice, request.MarkTime); err != nil {
+	if err := savePaperAccountSnapshots(ctx, repo, request.AccountID, request.Exchange, request.MarketType, request.Symbol, state.Equity, request.Leverage, position, request.MarkPrice, request.MarkTime, request.FeeRate, request.SlippageRate); err != nil {
 		return paperAccountState{}, err
 	}
 	return state, nil
@@ -492,13 +517,14 @@ func openPaperPosition(ctx context.Context, repo *portfolio.SQLiteRepository, re
 	if err != nil {
 		return portfolio.PaperPositionRecord{}, fmt.Errorf("reload opened paper position %d: %w", id, err)
 	}
-	if err := savePaperAccountSnapshots(ctx, repo, request.AccountID, request.Exchange, request.MarketType, request.Symbol, request.Equity, request.Leverage, position, request.EntryPrice, request.OpenedAt); err != nil {
+	openPnL := paperPositionNetPnL(position, request.EntryPrice, request.FeeRate, request.SlippageRate)
+	if err := savePaperAccountSnapshots(ctx, repo, request.AccountID, request.Exchange, request.MarketType, request.Symbol, request.Equity+openPnL, request.Leverage, position, request.EntryPrice, request.OpenedAt, request.FeeRate, request.SlippageRate); err != nil {
 		return portfolio.PaperPositionRecord{}, err
 	}
 	return position, nil
 }
 
-func savePaperAccountSnapshots(ctx context.Context, repo *portfolio.SQLiteRepository, accountID string, exchange string, marketType string, symbol string, equity float64, leverage float64, position portfolio.PaperPositionRecord, markPrice float64, snapshotTime time.Time) error {
+func savePaperAccountSnapshots(ctx context.Context, repo *portfolio.SQLiteRepository, accountID string, exchange string, marketType string, symbol string, equity float64, leverage float64, position portfolio.PaperPositionRecord, markPrice float64, snapshotTime time.Time, feeRate float64, slippageRate float64) error {
 	if snapshotTime.IsZero() {
 		snapshotTime = time.Now().UTC()
 	}
@@ -524,7 +550,7 @@ func savePaperAccountSnapshots(ctx context.Context, repo *portfolio.SQLiteReposi
 	}
 
 	if position.ID != 0 {
-		pnl := paperPositionPnL(position, markPrice)
+		pnl := paperPositionNetPnL(position, markPrice, feeRate, slippageRate)
 		if _, err := repo.SavePositionSnapshot(ctx, portfolio.PositionSnapshot{
 			AccountID:     accountID,
 			Exchange:      exchange,
@@ -595,6 +621,26 @@ func paperExitReason(position portfolio.PaperPositionRecord, markPrice float64) 
 	return ""
 }
 
+func paperTrendExitReason(position portfolio.PaperPositionRecord, candles []marketdata.Candle, config paperStrategyConfig) string {
+	if normalizedStrategyType(config.StrategyType) != "scalp-tpsl" {
+		return ""
+	}
+	fastAverage, slowAverage, ok := latestAverages(candles, config.FastWindow, config.SlowWindow)
+	if !ok {
+		return ""
+	}
+	if strings.EqualFold(position.PositionSide, "short") {
+		if fastAverage > slowAverage {
+			return "trend_reversal"
+		}
+		return ""
+	}
+	if fastAverage < slowAverage {
+		return "trend_reversal"
+	}
+	return ""
+}
+
 func paperOrderPlan(action strategy.SignalAction, price float64, takeProfitPct float64, stopLossPct float64) (risk.Side, string, float64, float64, error) {
 	if price <= 0 {
 		return "", "", 0, 0, errors.New("price must be positive")
@@ -614,6 +660,24 @@ func paperPositionPnL(position portfolio.PaperPositionRecord, markPrice float64)
 		return (position.EntryPrice - markPrice) * math.Abs(position.Quantity)
 	}
 	return (markPrice - position.EntryPrice) * math.Abs(position.Quantity)
+}
+
+func paperPositionNetPnL(position portfolio.PaperPositionRecord, markPrice float64, feeRate float64, slippageRate float64) float64 {
+	grossPnL := paperPositionPnL(position, markPrice)
+	costRate := math.Max(feeRate, 0) + math.Max(slippageRate, 0)
+	if costRate == 0 {
+		return grossPnL
+	}
+	entryCost := paperTradeCost(position.EntryPrice, position.Quantity, costRate)
+	exitCost := paperTradeCost(markPrice, position.Quantity, costRate)
+	return grossPnL - entryCost - exitCost
+}
+
+func paperTradeCost(price float64, quantity float64, costRate float64) float64 {
+	if price <= 0 || quantity == 0 || costRate <= 0 {
+		return 0
+	}
+	return math.Abs(price*quantity) * costRate
 }
 
 func latestCandlePrice(candles []marketdata.Candle) (float64, time.Time, error) {
@@ -712,6 +776,24 @@ func latestScalpSignal(candles []marketdata.Candle, config paperStrategyConfig) 
 		return paperSignal{Action: strategy.SignalShort, PositionSide: "short"}
 	}
 	return paperSignal{Action: strategy.SignalHold}
+}
+
+func latestAverages(candles []marketdata.Candle, fastWindow int, slowWindow int) (float64, float64, bool) {
+	if fastWindow <= 0 || slowWindow <= 0 || fastWindow >= slowWindow || len(candles) < slowWindow {
+		return 0, 0, false
+	}
+	closes := make([]float64, 0, len(candles))
+	for _, candle := range candles {
+		closePrice, err := strconv.ParseFloat(candle.Close, 64)
+		if err != nil || closePrice <= 0 || math.IsNaN(closePrice) || math.IsInf(closePrice, 0) {
+			return 0, 0, false
+		}
+		closes = append(closes, closePrice)
+	}
+	latest := len(closes) - 1
+	fastAverage := average(closes[latest-fastWindow+1 : latest+1])
+	slowAverage := average(closes[latest-slowWindow+1 : latest+1])
+	return fastAverage, slowAverage, true
 }
 
 func average(values []float64) float64 {
