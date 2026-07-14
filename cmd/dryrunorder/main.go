@@ -24,7 +24,7 @@ func main() {
 func run() error {
 	defaultRisk := risk.DefaultConfig()
 	var (
-		dsn                  = flag.String("dsn", env("DATABASE_DSN", "/Users/guilinzhou/Desktop/test-nemo/gogogo/data.db"), "sqlite database path")
+		dsn                  = flag.String("dsn", env("DATABASE_DSN", "data.db"), "sqlite database path")
 		accountID            = flag.String("account", "research", "account id")
 		strategyID           = flag.String("strategy", "manual-dry-run", "strategy id")
 		exchange             = flag.String("exchange", env("EXCHANGE_NAME", onebullex.ExchangeName), "exchange name")

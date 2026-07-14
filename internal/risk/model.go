@@ -147,17 +147,17 @@ func EvaluateOrder(config Config, account AccountSnapshot, order OrderIntent) (R
 		Events:             make([]Event, 0),
 	}
 
-	if account.DailyRealizedPnL < 0 {
-		lossPct := math.Abs(account.DailyRealizedPnL) / account.Equity * 100
-		if lossPct >= config.MaxDailyLossPct {
-			result.add(DecisionHalt, SeverityCritical, "daily_loss_halt", fmt.Sprintf("daily loss %.2f%% reached limit %.2f%%", lossPct, config.MaxDailyLossPct))
-		}
-	}
-	if config.MaxConsecutiveLosses > 0 && account.ConsecutiveLosses >= config.MaxConsecutiveLosses {
-		result.add(DecisionHalt, SeverityCritical, "consecutive_loss_halt", fmt.Sprintf("consecutive losses %d reached limit %d", account.ConsecutiveLosses, config.MaxConsecutiveLosses))
-	}
-
 	if !order.ReduceOnly {
+		if account.DailyRealizedPnL < 0 {
+			lossPct := math.Abs(account.DailyRealizedPnL) / account.Equity * 100
+			if lossPct >= config.MaxDailyLossPct {
+				result.add(DecisionHalt, SeverityCritical, "daily_loss_halt", fmt.Sprintf("daily loss %.2f%% reached limit %.2f%%", lossPct, config.MaxDailyLossPct))
+			}
+		}
+		if config.MaxConsecutiveLosses > 0 && account.ConsecutiveLosses >= config.MaxConsecutiveLosses {
+			result.add(DecisionHalt, SeverityCritical, "consecutive_loss_halt", fmt.Sprintf("consecutive losses %d reached limit %d", account.ConsecutiveLosses, config.MaxConsecutiveLosses))
+		}
+
 		if config.MinQuantity > 0 && order.Quantity+1e-12 < config.MinQuantity {
 			result.add(DecisionReject, SeverityCritical, "min_quantity_limit", fmt.Sprintf("quantity %.8f below minimum %.8f", order.Quantity, config.MinQuantity))
 		}

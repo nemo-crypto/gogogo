@@ -70,20 +70,21 @@ CREATE TABLE IF NOT EXISTS candles (
 	CREATE INDEX IF NOT EXISTS idx_candles_lookup
 	ON candles (exchange, market_type, symbol, interval, open_time);
 
-	CREATE TABLE IF NOT EXISTS trades (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		exchange TEXT NOT NULL,
-		market_type TEXT NOT NULL CHECK (market_type IN ('spot', 'perpetual')),
-		symbol TEXT NOT NULL,
-		trade_id TEXT NOT NULL,
-		price TEXT NOT NULL,
-		quantity TEXT NOT NULL,
-		quote_quantity TEXT NOT NULL DEFAULT '',
-		side TEXT NOT NULL DEFAULT '',
-		trade_time DATETIME NOT NULL,
-		created_at DATETIME NOT NULL,
-		UNIQUE(exchange, market_type, symbol, trade_id)
-	);
+		CREATE TABLE IF NOT EXISTS trades (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			exchange TEXT NOT NULL,
+			market_type TEXT NOT NULL CHECK (market_type IN ('spot', 'perpetual')),
+			symbol TEXT NOT NULL,
+			trade_id TEXT NOT NULL,
+			price TEXT NOT NULL,
+			quantity TEXT NOT NULL,
+			quote_quantity TEXT NOT NULL DEFAULT '',
+			side TEXT NOT NULL DEFAULT '',
+			trade_time DATETIME NOT NULL,
+			raw_json TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL,
+			UNIQUE(exchange, market_type, symbol, trade_id)
+		);
 
 	CREATE INDEX IF NOT EXISTS idx_trades_lookup
 	ON trades (exchange, market_type, symbol, trade_time);
@@ -91,14 +92,16 @@ CREATE TABLE IF NOT EXISTS candles (
 	CREATE TABLE IF NOT EXISTS order_books (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		exchange TEXT NOT NULL,
-		market_type TEXT NOT NULL CHECK (market_type IN ('spot', 'perpetual')),
-		symbol TEXT NOT NULL,
-		event_time DATETIME NOT NULL,
-		bids_json TEXT NOT NULL,
-		asks_json TEXT NOT NULL,
-		created_at DATETIME NOT NULL,
-		UNIQUE(exchange, market_type, symbol, event_time)
-	);
+			market_type TEXT NOT NULL CHECK (market_type IN ('spot', 'perpetual')),
+			symbol TEXT NOT NULL,
+			event_time DATETIME NOT NULL,
+			update_id INTEGER NOT NULL DEFAULT 0,
+			bids_json TEXT NOT NULL,
+			asks_json TEXT NOT NULL,
+			raw_json TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL,
+			UNIQUE(exchange, market_type, symbol, event_time)
+		);
 
 	CREATE INDEX IF NOT EXISTS idx_order_books_lookup
 	ON order_books (exchange, market_type, symbol, event_time);
@@ -107,13 +110,14 @@ CREATE TABLE IF NOT EXISTS funding_rates (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	exchange TEXT NOT NULL,
 	symbol TEXT NOT NULL,
-	funding_time DATETIME NOT NULL,
-	funding_rate TEXT NOT NULL,
-	mark_price TEXT NOT NULL,
-	index_price TEXT NOT NULL DEFAULT '',
-	created_at DATETIME NOT NULL,
-	UNIQUE(exchange, symbol, funding_time)
-);
+		funding_time DATETIME NOT NULL,
+		funding_rate TEXT NOT NULL,
+		mark_price TEXT NOT NULL,
+		index_price TEXT NOT NULL DEFAULT '',
+		raw_json TEXT NOT NULL DEFAULT '',
+		created_at DATETIME NOT NULL,
+		UNIQUE(exchange, symbol, funding_time)
+	);
 
 CREATE INDEX IF NOT EXISTS idx_funding_rates_lookup
 ON funding_rates (exchange, symbol, funding_time);
@@ -124,12 +128,13 @@ CREATE TABLE IF NOT EXISTS mark_prices (
 	symbol TEXT NOT NULL,
 	event_time DATETIME NOT NULL,
 	mark_price TEXT NOT NULL,
-	index_price TEXT NOT NULL,
-	estimated_settle_price TEXT NOT NULL DEFAULT '',
-	next_funding_time DATETIME,
-	created_at DATETIME NOT NULL,
-	UNIQUE(exchange, symbol, event_time)
-);
+		index_price TEXT NOT NULL,
+		estimated_settle_price TEXT NOT NULL DEFAULT '',
+		next_funding_time DATETIME,
+		raw_json TEXT NOT NULL DEFAULT '',
+		created_at DATETIME NOT NULL,
+		UNIQUE(exchange, symbol, event_time)
+	);
 
 	CREATE INDEX IF NOT EXISTS idx_mark_prices_lookup
 	ON mark_prices (exchange, symbol, event_time);
@@ -138,11 +143,12 @@ CREATE TABLE IF NOT EXISTS mark_prices (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		exchange TEXT NOT NULL,
 		symbol TEXT NOT NULL,
-		event_time DATETIME NOT NULL,
-		index_price TEXT NOT NULL,
-		created_at DATETIME NOT NULL,
-		UNIQUE(exchange, symbol, event_time)
-	);
+			event_time DATETIME NOT NULL,
+			index_price TEXT NOT NULL,
+			raw_json TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL,
+			UNIQUE(exchange, symbol, event_time)
+		);
 
 	CREATE INDEX IF NOT EXISTS idx_index_prices_lookup
 	ON index_prices (exchange, symbol, event_time);
@@ -193,6 +199,55 @@ CREATE TABLE IF NOT EXISTS mark_prices (
 CREATE INDEX IF NOT EXISTS idx_backtest_runs_lookup
 ON backtest_runs (strategy_name, exchange, market_type, symbol, interval, created_at);
 `)
+	if err != nil {
+		return err
+	}
+	columns := []struct {
+		table      string
+		column     string
+		definition string
+	}{
+		{"trades", "raw_json", "TEXT NOT NULL DEFAULT ''"},
+		{"order_books", "update_id", "INTEGER NOT NULL DEFAULT 0"},
+		{"order_books", "raw_json", "TEXT NOT NULL DEFAULT ''"},
+		{"funding_rates", "raw_json", "TEXT NOT NULL DEFAULT ''"},
+		{"mark_prices", "raw_json", "TEXT NOT NULL DEFAULT ''"},
+		{"index_prices", "raw_json", "TEXT NOT NULL DEFAULT ''"},
+	}
+	for _, column := range columns {
+		if err := addColumnIfMissing(ctx, db, column.table, column.column, column.definition); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func addColumnIfMissing(ctx context.Context, db *sql.DB, table string, column string, definition string) error {
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(`+table+`);`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var dataType string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	_, err = db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN `+column+` `+definition+`;`)
 	return err
 }
 
@@ -243,6 +298,78 @@ DO UPDATE SET
 		candle.Source,
 		candle.CreatedAt,
 		candle.UpdatedAt,
+	)
+	return err
+}
+
+func (r *SQLiteRepository) UpsertTrade(ctx context.Context, trade Trade) error {
+	trade, err := normalizeTrade(trade)
+	if err != nil {
+		return err
+	}
+	if trade.CreatedAt.IsZero() {
+		trade.CreatedAt = time.Now().UTC()
+	}
+
+	_, err = r.db.ExecContext(ctx, `
+	INSERT INTO trades (
+		exchange, market_type, symbol, trade_id, price, quantity, quote_quantity,
+		side, trade_time, raw_json, created_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(exchange, market_type, symbol, trade_id)
+	DO UPDATE SET
+		price = excluded.price,
+		quantity = excluded.quantity,
+		quote_quantity = excluded.quote_quantity,
+		side = excluded.side,
+		trade_time = excluded.trade_time,
+		raw_json = excluded.raw_json;
+	`,
+		trade.Exchange,
+		string(trade.MarketType),
+		trade.Symbol,
+		trade.TradeID,
+		trade.Price,
+		trade.Quantity,
+		trade.QuoteQuantity,
+		trade.Side,
+		trade.TradeTime,
+		trade.RawJSON,
+		trade.CreatedAt,
+	)
+	return err
+}
+
+func (r *SQLiteRepository) UpsertOrderBook(ctx context.Context, book OrderBook) error {
+	book, err := normalizeOrderBook(book)
+	if err != nil {
+		return err
+	}
+	if book.CreatedAt.IsZero() {
+		book.CreatedAt = time.Now().UTC()
+	}
+
+	_, err = r.db.ExecContext(ctx, `
+	INSERT INTO order_books (
+		exchange, market_type, symbol, event_time, update_id, bids_json,
+		asks_json, raw_json, created_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(exchange, market_type, symbol, event_time)
+	DO UPDATE SET
+		update_id = excluded.update_id,
+		bids_json = excluded.bids_json,
+		asks_json = excluded.asks_json,
+		raw_json = excluded.raw_json;
+	`,
+		book.Exchange,
+		string(book.MarketType),
+		book.Symbol,
+		book.EventTime,
+		book.UpdateID,
+		book.BidsJSON,
+		book.AsksJSON,
+		book.RawJSON,
+		book.CreatedAt,
 	)
 	return err
 }
@@ -423,20 +550,22 @@ func (r *SQLiteRepository) UpsertFundingRate(ctx context.Context, rate FundingRa
 
 	_, err = r.db.ExecContext(ctx, `
 INSERT INTO funding_rates (
-	exchange, symbol, funding_time, funding_rate, mark_price, index_price, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(exchange, symbol, funding_time)
-DO UPDATE SET
-	funding_rate = excluded.funding_rate,
-	mark_price = excluded.mark_price,
-	index_price = excluded.index_price;
-`,
+		exchange, symbol, funding_time, funding_rate, mark_price, index_price, raw_json, created_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(exchange, symbol, funding_time)
+	DO UPDATE SET
+		funding_rate = excluded.funding_rate,
+		mark_price = excluded.mark_price,
+		index_price = excluded.index_price,
+		raw_json = excluded.raw_json;
+	`,
 		rate.Exchange,
 		rate.Symbol,
 		rate.FundingTime,
 		rate.FundingRate,
 		rate.MarkPrice,
 		rate.IndexPrice,
+		rate.RawJSON,
 		rate.CreatedAt,
 	)
 	return err
@@ -525,15 +654,16 @@ func (r *SQLiteRepository) UpsertMarkPrice(ctx context.Context, price MarkPrice)
 	_, err = r.db.ExecContext(ctx, `
 INSERT INTO mark_prices (
 	exchange, symbol, event_time, mark_price, index_price,
-	estimated_settle_price, next_funding_time, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(exchange, symbol, event_time)
-DO UPDATE SET
-	mark_price = excluded.mark_price,
-	index_price = excluded.index_price,
-	estimated_settle_price = excluded.estimated_settle_price,
-	next_funding_time = excluded.next_funding_time;
-`,
+		estimated_settle_price, next_funding_time, raw_json, created_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(exchange, symbol, event_time)
+	DO UPDATE SET
+		mark_price = excluded.mark_price,
+		index_price = excluded.index_price,
+		estimated_settle_price = excluded.estimated_settle_price,
+		next_funding_time = excluded.next_funding_time,
+		raw_json = excluded.raw_json;
+	`,
 		price.Exchange,
 		price.Symbol,
 		price.EventTime,
@@ -541,6 +671,35 @@ DO UPDATE SET
 		price.IndexPrice,
 		price.EstimatedSettlePrice,
 		nullableTime(price.NextFundingTime),
+		price.RawJSON,
+		price.CreatedAt,
+	)
+	return err
+}
+
+func (r *SQLiteRepository) UpsertIndexPrice(ctx context.Context, price IndexPrice) error {
+	price, err := normalizeIndexPrice(price)
+	if err != nil {
+		return err
+	}
+	if price.CreatedAt.IsZero() {
+		price.CreatedAt = time.Now().UTC()
+	}
+
+	_, err = r.db.ExecContext(ctx, `
+	INSERT INTO index_prices (
+		exchange, symbol, event_time, index_price, raw_json, created_at
+	) VALUES (?, ?, ?, ?, ?, ?)
+	ON CONFLICT(exchange, symbol, event_time)
+	DO UPDATE SET
+		index_price = excluded.index_price,
+		raw_json = excluded.raw_json;
+	`,
+		price.Exchange,
+		price.Symbol,
+		price.EventTime,
+		price.IndexPrice,
+		price.RawJSON,
 		price.CreatedAt,
 	)
 	return err

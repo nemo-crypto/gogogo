@@ -34,24 +34,34 @@ func InitSQLiteSchema(ctx context.Context, db *sql.DB) error {
 		exchange TEXT NOT NULL,
 		market_type TEXT NOT NULL CHECK (market_type IN ('spot', 'perpetual')),
 		symbol TEXT NOT NULL,
-		client_order_id TEXT NOT NULL,
-		exchange_order_id TEXT NOT NULL DEFAULT '',
-		exchange_status TEXT NOT NULL DEFAULT '',
-		side TEXT NOT NULL,
-		order_type TEXT NOT NULL,
-		time_in_force TEXT NOT NULL DEFAULT '',
-		reduce_only INTEGER NOT NULL DEFAULT 0,
-		price REAL NOT NULL,
-		quantity REAL NOT NULL,
-		stop_price REAL NOT NULL DEFAULT 0,
-		take_profit_price REAL NOT NULL DEFAULT 0,
-		leverage REAL NOT NULL DEFAULT 1,
-		status TEXT NOT NULL,
-		risk_decision TEXT NOT NULL,
-		risk_reason TEXT NOT NULL DEFAULT '',
-		created_at DATETIME NOT NULL,
-		updated_at DATETIME NOT NULL,
-		UNIQUE(exchange, account_id, client_order_id)
+			client_order_id TEXT NOT NULL,
+			exchange_order_id TEXT NOT NULL DEFAULT '',
+			exchange_status TEXT NOT NULL DEFAULT '',
+			position_id TEXT NOT NULL DEFAULT '',
+			position_model TEXT NOT NULL DEFAULT '',
+			side TEXT NOT NULL,
+			order_type TEXT NOT NULL,
+			time_in_force TEXT NOT NULL DEFAULT '',
+			reduce_only INTEGER NOT NULL DEFAULT 0,
+			price REAL NOT NULL,
+			quantity REAL NOT NULL,
+			avg_price TEXT NOT NULL DEFAULT '',
+			executed_qty TEXT NOT NULL DEFAULT '',
+			margin_frozen TEXT NOT NULL DEFAULT '',
+			stop_price REAL NOT NULL DEFAULT 0,
+			take_profit_price REAL NOT NULL DEFAULT 0,
+			source_id TEXT NOT NULL DEFAULT '',
+			force_close INTEGER NOT NULL DEFAULT 0,
+			close_profit TEXT NOT NULL DEFAULT '',
+			leverage REAL NOT NULL DEFAULT 1,
+			status TEXT NOT NULL,
+			risk_decision TEXT NOT NULL,
+			risk_reason TEXT NOT NULL DEFAULT '',
+			exchange_created_at DATETIME,
+			raw_json TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			UNIQUE(exchange, account_id, client_order_id)
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_orders_lookup
@@ -86,7 +96,28 @@ func InitSQLiteSchema(ctx context.Context, db *sql.DB) error {
 	if err := addColumnIfMissing(ctx, db, "orders", "exchange_order_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	return addColumnIfMissing(ctx, db, "orders", "exchange_status", "TEXT NOT NULL DEFAULT ''")
+	columns := []struct {
+		column     string
+		definition string
+	}{
+		{"exchange_status", "TEXT NOT NULL DEFAULT ''"},
+		{"position_id", "TEXT NOT NULL DEFAULT ''"},
+		{"position_model", "TEXT NOT NULL DEFAULT ''"},
+		{"avg_price", "TEXT NOT NULL DEFAULT ''"},
+		{"executed_qty", "TEXT NOT NULL DEFAULT ''"},
+		{"margin_frozen", "TEXT NOT NULL DEFAULT ''"},
+		{"source_id", "TEXT NOT NULL DEFAULT ''"},
+		{"force_close", "INTEGER NOT NULL DEFAULT 0"},
+		{"close_profit", "TEXT NOT NULL DEFAULT ''"},
+		{"exchange_created_at", "DATETIME"},
+		{"raw_json", "TEXT NOT NULL DEFAULT ''"},
+	}
+	for _, column := range columns {
+		if err := addColumnIfMissing(ctx, db, "orders", column.column, column.definition); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func addColumnIfMissing(ctx context.Context, db *sql.DB, table string, column string, definition string) error {
@@ -132,10 +163,13 @@ func (r *SQLiteRepository) SubmitOrderToExchange(ctx context.Context, client exc
 		ClientOrderID:      order.ClientOrderID,
 		Side:               string(order.Side),
 		OrderType:          order.OrderType,
+		PositionModel:      order.PositionModel,
+		PositionID:         order.PositionID,
 		TimeInForce:        order.TimeInForce,
 		ReduceOnly:         order.ReduceOnly,
 		Price:              exchangeOrderPrice(order),
 		Quantity:           formatExchangeDecimal(order.Quantity),
+		Leverage:           int(order.Leverage),
 		TriggerProfitPrice: exchangeProtectionPrice(order.TakeProfitPrice, order.ReduceOnly),
 		TriggerStopPrice:   exchangeProtectionPrice(order.StopPrice, order.ReduceOnly),
 		ProfitOrderType:    exchangeProtectionOrderType(order.TakeProfitPrice, order.ReduceOnly),
@@ -168,10 +202,12 @@ func (r *SQLiteRepository) UpdateExchangeOrderStatus(ctx context.Context, orderI
 	}
 	mappedStatus := orderStatusFromExchange(status.Status)
 	_, err := r.db.ExecContext(ctx, `
-	UPDATE orders
-	SET exchange_order_id = ?, exchange_status = ?, status = ?, updated_at = ?
-	WHERE id = ?;
-	`, status.ExchangeOrderID, status.Status, string(mappedStatus), updatedAt, orderID)
+		UPDATE orders
+		SET exchange_order_id = ?, exchange_status = ?, position_id = ?, avg_price = ?,
+			executed_qty = ?, margin_frozen = ?, source_id = ?, force_close = ?,
+			close_profit = ?, exchange_created_at = ?, raw_json = ?, status = ?, updated_at = ?
+		WHERE id = ?;
+		`, status.ExchangeOrderID, status.Status, status.PositionID, status.AvgPrice, status.ExecutedQty, status.MarginFrozen, status.SourceID, boolToInt(status.ForceClose), status.CloseProfit, nullableTime(status.CreatedAt), status.RawJSON, string(mappedStatus), updatedAt, orderID)
 	if err != nil {
 		return OrderRecord{}, err
 	}
@@ -180,12 +216,13 @@ func (r *SQLiteRepository) UpdateExchangeOrderStatus(ctx context.Context, orderI
 
 func (r *SQLiteRepository) GetOrderByID(ctx context.Context, id int64) (OrderRecord, error) {
 	row := r.db.QueryRowContext(ctx, `
-	SELECT id, account_id, strategy_id, exchange, market_type, symbol, client_order_id,
-		exchange_order_id, exchange_status, side, order_type, time_in_force, reduce_only,
-		price, quantity, stop_price, take_profit_price, leverage, status, risk_decision,
-		risk_reason, created_at, updated_at
-	FROM orders
-	WHERE id = ?;
+		SELECT id, account_id, strategy_id, exchange, market_type, symbol, client_order_id,
+			exchange_order_id, exchange_status, position_id, position_model, side, order_type, time_in_force,
+			reduce_only, price, quantity, avg_price, executed_qty, margin_frozen, stop_price,
+			take_profit_price, source_id, force_close, close_profit, leverage, status,
+			risk_decision, risk_reason, exchange_created_at, raw_json, created_at, updated_at
+		FROM orders
+		WHERE id = ?;
 	`, id)
 	return scanOrder(row)
 }
@@ -210,9 +247,9 @@ func (r *SQLiteRepository) RecordDryRunOrder(ctx context.Context, request DryRun
 	inserted, err := tx.ExecContext(ctx, `
 	INSERT INTO orders (
 		account_id, strategy_id, exchange, market_type, symbol, client_order_id,
-		side, order_type, time_in_force, reduce_only, price, quantity, stop_price,
+		position_model, side, order_type, time_in_force, reduce_only, price, quantity, stop_price,
 		take_profit_price, leverage, status, risk_decision, risk_reason, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(exchange, account_id, client_order_id) DO NOTHING;
 	`,
 		request.Account.AccountID,
@@ -221,6 +258,7 @@ func (r *SQLiteRepository) RecordDryRunOrder(ctx context.Context, request DryRun
 		string(request.Order.MarketType),
 		request.Order.Symbol,
 		request.ClientOrderID,
+		normalizePositionModel(request.PositionModel),
 		string(request.Order.Side),
 		request.OrderType,
 		request.TimeInForce,
@@ -407,24 +445,26 @@ func orderStatusForDecision(decision risk.Decision) OrderStatus {
 
 func getOrderByID(ctx context.Context, tx *sql.Tx, id int64) (OrderRecord, error) {
 	row := tx.QueryRowContext(ctx, `
-	SELECT id, account_id, strategy_id, exchange, market_type, symbol, client_order_id,
-		exchange_order_id, exchange_status, side, order_type, time_in_force, reduce_only,
-		price, quantity, stop_price, take_profit_price, leverage, status, risk_decision,
-		risk_reason, created_at, updated_at
-	FROM orders
-	WHERE id = ?;
+		SELECT id, account_id, strategy_id, exchange, market_type, symbol, client_order_id,
+			exchange_order_id, exchange_status, position_id, position_model, side, order_type, time_in_force,
+			reduce_only, price, quantity, avg_price, executed_qty, margin_frozen, stop_price,
+			take_profit_price, source_id, force_close, close_profit, leverage, status,
+			risk_decision, risk_reason, exchange_created_at, raw_json, created_at, updated_at
+		FROM orders
+		WHERE id = ?;
 	`, id)
 	return scanOrder(row)
 }
 
 func getOrderByClientID(ctx context.Context, tx *sql.Tx, exchange string, accountID string, clientOrderID string) (OrderRecord, error) {
 	row := tx.QueryRowContext(ctx, `
-	SELECT id, account_id, strategy_id, exchange, market_type, symbol, client_order_id,
-		exchange_order_id, exchange_status, side, order_type, time_in_force, reduce_only,
-		price, quantity, stop_price, take_profit_price, leverage, status, risk_decision,
-		risk_reason, created_at, updated_at
-	FROM orders
-	WHERE exchange = ? AND account_id = ? AND client_order_id = ?;
+		SELECT id, account_id, strategy_id, exchange, market_type, symbol, client_order_id,
+			exchange_order_id, exchange_status, position_id, position_model, side, order_type, time_in_force,
+			reduce_only, price, quantity, avg_price, executed_qty, margin_frozen, stop_price,
+			take_profit_price, source_id, force_close, close_profit, leverage, status,
+			risk_decision, risk_reason, exchange_created_at, raw_json, created_at, updated_at
+		FROM orders
+		WHERE exchange = ? AND account_id = ? AND client_order_id = ?;
 	`, exchange, accountID, clientOrderID)
 	return scanOrder(row)
 }
@@ -465,8 +505,10 @@ func scanOrder(scanner scanner) (OrderRecord, error) {
 	var marketType string
 	var side string
 	var reduceOnly int
+	var forceClose int
 	var status string
 	var decision string
+	var exchangeCreatedAt sql.NullTime
 	if err := scanner.Scan(
 		&record.ID,
 		&record.AccountID,
@@ -477,18 +519,28 @@ func scanOrder(scanner scanner) (OrderRecord, error) {
 		&record.ClientOrderID,
 		&record.ExchangeOrderID,
 		&record.ExchangeStatus,
+		&record.PositionID,
+		&record.PositionModel,
 		&side,
 		&record.OrderType,
 		&record.TimeInForce,
 		&reduceOnly,
 		&record.Price,
 		&record.Quantity,
+		&record.AvgPrice,
+		&record.ExecutedQty,
+		&record.MarginFrozen,
 		&record.StopPrice,
 		&record.TakeProfitPrice,
+		&record.SourceID,
+		&forceClose,
+		&record.CloseProfit,
 		&record.Leverage,
 		&status,
 		&decision,
 		&record.RiskReason,
+		&exchangeCreatedAt,
+		&record.RawJSON,
 		&record.CreatedAt,
 		&record.UpdatedAt,
 	); err != nil {
@@ -500,8 +552,12 @@ func scanOrder(scanner scanner) (OrderRecord, error) {
 	record.MarketType = risk.MarketType(marketType)
 	record.Side = risk.Side(side)
 	record.ReduceOnly = reduceOnly != 0
+	record.ForceClose = forceClose != 0
 	record.Status = OrderStatus(status)
 	record.RiskDecision = risk.Decision(decision)
+	if exchangeCreatedAt.Valid {
+		record.ExchangeCreatedAt = exchangeCreatedAt.Time
+	}
 	return record, nil
 }
 
@@ -564,4 +620,23 @@ func boolToInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+func nullableTime(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return value.UTC()
+}
+
+func normalizePositionModel(value string) string {
+	normalized := strings.ToUpper(strings.TrimSpace(value))
+	switch normalized {
+	case "LONG_SHORT":
+		return "DISAGGREGATION"
+	case "ONE_WAY", "ONEWAY":
+		return "AGGREGATION"
+	default:
+		return normalized
+	}
 }

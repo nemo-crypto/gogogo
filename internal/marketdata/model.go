@@ -44,6 +44,7 @@ type FundingRate struct {
 	FundingRate string
 	MarkPrice   string
 	IndexPrice  string
+	RawJSON     string
 	CreatedAt   time.Time
 }
 
@@ -55,7 +56,43 @@ type MarkPrice struct {
 	IndexPrice           string
 	EstimatedSettlePrice string
 	NextFundingTime      time.Time
+	RawJSON              string
 	CreatedAt            time.Time
+}
+
+type Trade struct {
+	Exchange      string
+	MarketType    MarketType
+	Symbol        string
+	TradeID       string
+	Price         string
+	Quantity      string
+	QuoteQuantity string
+	Side          string
+	TradeTime     time.Time
+	RawJSON       string
+	CreatedAt     time.Time
+}
+
+type OrderBook struct {
+	Exchange   string
+	MarketType MarketType
+	Symbol     string
+	EventTime  time.Time
+	UpdateID   int64
+	BidsJSON   string
+	AsksJSON   string
+	RawJSON    string
+	CreatedAt  time.Time
+}
+
+type IndexPrice struct {
+	Exchange   string
+	Symbol     string
+	EventTime  time.Time
+	IndexPrice string
+	RawJSON    string
+	CreatedAt  time.Time
 }
 
 type CandleQuery struct {
@@ -192,6 +229,7 @@ func normalizeFundingRate(rate FundingRate) (FundingRate, error) {
 	if err := requireDecimal("funding rate", rate.FundingRate); err != nil {
 		return FundingRate{}, err
 	}
+	rate.RawJSON = strings.TrimSpace(rate.RawJSON)
 	if err := requirePositiveDecimal("mark price", rate.MarkPrice); err != nil {
 		return FundingRate{}, err
 	}
@@ -209,6 +247,7 @@ func normalizeMarkPrice(price MarkPrice) (MarkPrice, error) {
 	price.Exchange = normalizeExchange(price.Exchange)
 	price.Symbol = normalizeSymbol(price.Symbol)
 	price.EstimatedSettlePrice = strings.TrimSpace(price.EstimatedSettlePrice)
+	price.RawJSON = strings.TrimSpace(price.RawJSON)
 	price.EventTime = price.EventTime.UTC()
 	price.NextFundingTime = price.NextFundingTime.UTC()
 	price.CreatedAt = price.CreatedAt.UTC()
@@ -234,6 +273,84 @@ func normalizeMarkPrice(price MarkPrice) (MarkPrice, error) {
 		}
 	}
 
+	return price, nil
+}
+
+func normalizeTrade(trade Trade) (Trade, error) {
+	trade.Exchange = normalizeExchange(trade.Exchange)
+	trade.MarketType = normalizeMarketType(trade.MarketType)
+	trade.Symbol = normalizeSymbol(trade.Symbol)
+	trade.TradeID = strings.TrimSpace(trade.TradeID)
+	trade.Side = strings.ToLower(strings.TrimSpace(trade.Side))
+	trade.RawJSON = strings.TrimSpace(trade.RawJSON)
+	trade.TradeTime = trade.TradeTime.UTC()
+	trade.CreatedAt = trade.CreatedAt.UTC()
+
+	if err := validateMarket(trade.Exchange, trade.MarketType, trade.Symbol); err != nil {
+		return Trade{}, err
+	}
+	if trade.TradeID == "" {
+		return Trade{}, errors.New("trade id is required")
+	}
+	if trade.TradeTime.IsZero() {
+		return Trade{}, errors.New("trade time is required")
+	}
+	if err := requirePositiveDecimal("trade price", trade.Price); err != nil {
+		return Trade{}, err
+	}
+	if err := requirePositiveDecimal("trade quantity", trade.Quantity); err != nil {
+		return Trade{}, err
+	}
+	trade.QuoteQuantity = strings.TrimSpace(trade.QuoteQuantity)
+	if trade.QuoteQuantity != "" {
+		if err := requireNonNegativeDecimal("trade quote quantity", trade.QuoteQuantity); err != nil {
+			return Trade{}, err
+		}
+	}
+	return trade, nil
+}
+
+func normalizeOrderBook(book OrderBook) (OrderBook, error) {
+	book.Exchange = normalizeExchange(book.Exchange)
+	book.MarketType = normalizeMarketType(book.MarketType)
+	book.Symbol = normalizeSymbol(book.Symbol)
+	book.BidsJSON = strings.TrimSpace(book.BidsJSON)
+	book.AsksJSON = strings.TrimSpace(book.AsksJSON)
+	book.RawJSON = strings.TrimSpace(book.RawJSON)
+	book.EventTime = book.EventTime.UTC()
+	book.CreatedAt = book.CreatedAt.UTC()
+
+	if err := validateMarket(book.Exchange, book.MarketType, book.Symbol); err != nil {
+		return OrderBook{}, err
+	}
+	if book.EventTime.IsZero() {
+		return OrderBook{}, errors.New("order book event time is required")
+	}
+	if book.BidsJSON == "" || book.AsksJSON == "" {
+		return OrderBook{}, errors.New("order book bids and asks are required")
+	}
+	return book, nil
+}
+
+func normalizeIndexPrice(price IndexPrice) (IndexPrice, error) {
+	price.Exchange = normalizeExchange(price.Exchange)
+	price.Symbol = normalizeSymbol(price.Symbol)
+	price.RawJSON = strings.TrimSpace(price.RawJSON)
+	price.EventTime = price.EventTime.UTC()
+	price.CreatedAt = price.CreatedAt.UTC()
+
+	if price.Exchange == "" {
+		return IndexPrice{}, errors.New("exchange is required")
+	}
+	if price.Symbol == "" {
+		return IndexPrice{}, errors.New("symbol is required")
+	}
+	if price.EventTime.IsZero() {
+		return IndexPrice{}, errors.New("event time is required")
+	}
+	if err := requirePositiveDecimal("index price", price.IndexPrice); err != nil {
+		return IndexPrice{}, err
+	}
 	return price, nil
 }
 

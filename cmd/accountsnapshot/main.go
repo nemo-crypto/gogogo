@@ -25,7 +25,7 @@ func main() {
 
 func run() error {
 	var (
-		dsn              = flag.String("dsn", env("DATABASE_DSN", "/Users/guilinzhou/Desktop/test-nemo/gogogo/data.db"), "sqlite database path")
+		dsn              = flag.String("dsn", env("DATABASE_DSN", "data.db"), "sqlite database path")
 		accountID        = flag.String("account", "research", "account id")
 		exchange         = flag.String("exchange", env("EXCHANGE_NAME", onebullex.ExchangeName), "exchange name")
 		market           = flag.String("market", "perpetual", "market type")
@@ -36,6 +36,7 @@ func run() error {
 		usdValue         = flag.Float64("usd-value", 0, "balance USD value")
 		symbol           = flag.String("symbol", "", "optional position symbol")
 		positionSide     = flag.String("position-side", "long", "position side")
+		positionModel    = flag.String("position-model", "", "position model: AGGREGATION for one-way or DISAGGREGATION for hedge")
 		quantity         = flag.Float64("quantity", 0, "position quantity")
 		entryPrice       = flag.Float64("entry-price", 0, "entry price")
 		markPrice        = flag.Float64("mark-price", 0, "mark price")
@@ -68,7 +69,7 @@ func run() error {
 	exchangeName := normalizeExchangeName(*exchange)
 
 	if *syncLive {
-		return syncLiveAccountSnapshot(ctx, repo, *accountID, exchangeName, *market)
+		return syncLiveAccountSnapshot(ctx, repo, *accountID, exchangeName, *market, *symbol)
 	}
 
 	if _, err := repo.SaveBalanceSnapshot(ctx, portfolio.BalanceSnapshot{
@@ -89,6 +90,7 @@ func run() error {
 			MarketType:       *market,
 			Symbol:           *symbol,
 			PositionSide:     *positionSide,
+			PositionModel:    *positionModel,
 			Quantity:         *quantity,
 			EntryPrice:       *entryPrice,
 			MarkPrice:        *markPrice,
@@ -124,7 +126,7 @@ func env(key string, fallback string) string {
 	return config.Env(key, fallback)
 }
 
-func syncLiveAccountSnapshot(ctx context.Context, repo *portfolio.SQLiteRepository, accountID string, exchangeName string, market string) error {
+func syncLiveAccountSnapshot(ctx context.Context, repo *portfolio.SQLiteRepository, accountID string, exchangeName string, market string, symbol string) error {
 	if exchangeName != onebullex.ExchangeName {
 		return fmt.Errorf("live snapshot currently supports %s only", onebullex.ExchangeName)
 	}
@@ -139,22 +141,36 @@ func syncLiveAccountSnapshot(ctx context.Context, repo *portfolio.SQLiteReposito
 	if err := saveExchangeSnapshot(ctx, repo, snapshot, market); err != nil {
 		return err
 	}
+	configs, err := syncOneBullExPositionConfigs(ctx, repo, client, accountID, snapshot, symbol)
+	if err != nil {
+		return err
+	}
 	fmt.Printf("live_account_snapshot_saved account=%s exchange=%s balances=%d positions=%d time=%s readonly=%t\n",
 		snapshot.AccountID, snapshot.Exchange, len(snapshot.Balances), len(snapshot.Positions), snapshot.SnapshotTime.Format(time.RFC3339), snapshot.ReadOnly)
+	if configs > 0 {
+		fmt.Printf("live_position_configs_saved account=%s exchange=%s configs=%d\n", snapshot.AccountID, snapshot.Exchange, configs)
+	}
 	return nil
 }
 
 func saveExchangeSnapshot(ctx context.Context, repo *portfolio.SQLiteRepository, snapshot exchangemodel.AccountSnapshot, market string) error {
 	for _, balance := range snapshot.Balances {
 		if _, err := repo.SaveBalanceSnapshot(ctx, portfolio.BalanceSnapshot{
-			AccountID:    snapshot.AccountID,
-			Exchange:     snapshot.Exchange,
-			Asset:        balance.Asset,
-			Free:         parseFloat(balance.Free),
-			Locked:       parseFloat(balance.Locked),
-			Total:        parseFloat(balance.Total),
-			USDValue:     parseFloat(firstNonEmpty(balance.USDValue, balance.Total)),
-			SnapshotTime: snapshot.SnapshotTime,
+			AccountID:             snapshot.AccountID,
+			Exchange:              snapshot.Exchange,
+			Asset:                 balance.Asset,
+			Free:                  parseFloat(balance.Free),
+			Locked:                parseFloat(balance.Locked),
+			Total:                 parseFloat(balance.Total),
+			USDValue:              parseFloat(firstNonEmpty(balance.USDValue, balance.Total)),
+			WalletBalance:         balance.WalletBalance,
+			OpenOrderMarginFrozen: balance.OpenOrderMarginFrozen,
+			IsolatedMargin:        balance.IsolatedMargin,
+			CrossedMargin:         balance.CrossedMargin,
+			AvailableBalance:      balance.AvailableBalance,
+			Bonus:                 balance.Bonus,
+			RawJSON:               balance.RawJSON,
+			SnapshotTime:          snapshot.SnapshotTime,
 		}); err != nil {
 			return fmt.Errorf("save live balance %s: %w", balance.Asset, err)
 		}
@@ -167,19 +183,29 @@ func saveExchangeSnapshot(ctx context.Context, repo *portfolio.SQLiteRepository,
 			continue
 		}
 		if _, err := repo.SavePositionSnapshot(ctx, portfolio.PositionSnapshot{
-			AccountID:        snapshot.AccountID,
-			Exchange:         snapshot.Exchange,
-			MarketType:       market,
-			Symbol:           position.Symbol,
-			PositionSide:     position.PositionSide,
-			Quantity:         quantity,
-			EntryPrice:       parseFloat(position.EntryPrice),
-			MarkPrice:        parseFloat(position.MarkPrice),
-			LiquidationPrice: parseFloat(position.LiquidationPrice),
-			Leverage:         float64(position.Leverage),
-			MarginMode:       position.MarginMode,
-			UnrealizedPnL:    parseFloat(position.UnrealizedPnL),
-			SnapshotTime:     snapshot.SnapshotTime,
+			AccountID:          snapshot.AccountID,
+			Exchange:           snapshot.Exchange,
+			MarketType:         market,
+			Symbol:             position.Symbol,
+			ExchangePositionID: position.PositionID,
+			PositionSide:       position.PositionSide,
+			PositionModel:      position.PositionModel,
+			Quantity:           quantity,
+			CloseOrderSize:     position.CloseOrderSize,
+			AvailableCloseSize: position.AvailableClose,
+			EntryPrice:         parseFloat(position.EntryPrice),
+			MarkPrice:          parseFloat(position.MarkPrice),
+			LiquidationPrice:   parseFloat(position.LiquidationPrice),
+			Leverage:           float64(position.Leverage),
+			MarginMode:         position.MarginMode,
+			IsolatedMargin:     position.IsolatedMargin,
+			OpenOrderMargin:    position.OrderMargin,
+			RealizedProfit:     position.RealizedProfit,
+			AutoMargin:         position.AutoMargin,
+			ContractSize:       position.ContractSize,
+			UnrealizedPnL:      parseFloat(position.UnrealizedPnL),
+			RawJSON:            position.RawJSON,
+			SnapshotTime:       snapshot.SnapshotTime,
 		}); err != nil {
 			return fmt.Errorf("save live position %s %s: %w", position.Symbol, position.PositionSide, err)
 		}
@@ -197,6 +223,33 @@ func saveExchangeSnapshot(ctx context.Context, repo *portfolio.SQLiteRepository,
 		return fmt.Errorf("save live margin snapshot: %w", err)
 	}
 	return nil
+}
+
+func syncOneBullExPositionConfigs(ctx context.Context, repo *portfolio.SQLiteRepository, client *onebullex.Client, accountID string, snapshot exchangemodel.AccountSnapshot, explicitSymbol string) (int, error) {
+	symbols := make(map[string]struct{})
+	if strings.TrimSpace(explicitSymbol) != "" {
+		symbols[strings.ToUpper(strings.TrimSpace(explicitSymbol))] = struct{}{}
+	}
+	for _, position := range snapshot.Positions {
+		if strings.TrimSpace(position.Symbol) != "" {
+			symbols[strings.ToUpper(strings.TrimSpace(position.Symbol))] = struct{}{}
+		}
+	}
+
+	saved := 0
+	for symbol := range symbols {
+		configs, err := client.PositionConfigs(ctx, accountID, symbol)
+		if err != nil {
+			return saved, fmt.Errorf("fetch onebullex position configs %s: %w", symbol, err)
+		}
+		for _, config := range configs {
+			if _, err := repo.SavePositionConfig(ctx, config); err != nil {
+				return saved, fmt.Errorf("save onebullex position config %s %s: %w", config.Symbol, config.PositionSide, err)
+			}
+			saved++
+		}
+	}
+	return saved, nil
 }
 
 func balanceTotals(balances []exchangemodel.Balance) (float64, float64) {

@@ -2,15 +2,17 @@
 
 一个使用 Go 标准库 + SQLite 构建的币圈量化研究原型。目前聚焦 OneBullEx 永续合约短线策略，覆盖本地行情存储、真实行情同步、K 线质量检查、回测数据快照、SMA/TPSL 策略回测、回测报告、账户/仓位快照、paper trading、本地风控检查、dry-run 下单审计、每日报告、SQLite 备份和人工急停开关。
 
-当前系统不会向交易所提交真实订单。已实现 OneBullEx 公开行情、私有只读余额/仓位快照和受保护的订单接口；策略运行仍默认走本地模拟舱，live trading 开关默认关闭。
+系统默认不会向交易所提交真实订单。已实现 OneBullEx 公开行情、私有余额/仓位快照和受保护的订单接口；只有同时设置 `ONEBULLEX_LIVE_TRADING=true` 与 `SUBMIT_EXCHANGE=true` 才会进入真实下单路径。
 
 ## 已实现功能
 
-- 本地 SQLite 数据库：`/Users/guilinzhou/Desktop/test-nemo/gogogo/data.db`
+- 本地 SQLite 数据库：`data.db`
 - OneBullEx 公开行情同步：
   - 永续合约 K 线
   - 永续合约资金费率
   - 永续合约标记价格
+  - 指数价格、最近成交和订单簿
+  - 合约规格和杠杆档位
 - 本地数据表：
   - `candles`
   - `trades`
@@ -38,7 +40,8 @@
 - 回测结果落库和排名报告
 - 基础风控检查：单笔风险、单币种敞口、总敞口、杠杆、日亏损、连续亏损、强平距离、资金费率
 - Dry-run 下单日志：计划订单、风控结论、风险事件落库，不触发真实交易
-- Paper trading：基于本地历史 K 线生成策略运行、信号和绩效快照
+- Paper trading：基于真实行情驱动本地模拟开平仓，支持 `15m + 1h` 趋势过滤、日亏损/连续亏损熔断、保本止损和 ATR 追踪止损
+- 可选真实下单：风控通过后提交 OneBullEx 订单，并记录交易所订单号；默认关闭
 - 账户/仓位/保证金快照：本地写入 balances、positions、margin_snapshots；OneBullEx 私有 API 只读同步需显式开启
 - 每日运行报告、SQLite 备份、人工 emergency halt/resume
 
@@ -55,7 +58,7 @@ cmd/
   riskcheck/        # 本地下单意图风控检查
   dryrunorder/      # 写入 dry-run 订单和风险事件
   accountsnapshot/  # 写入本地账户、仓位、保证金快照
-  papertrade/       # 基于本地 K 线运行 paper trading
+  papertrade/       # 运行 paper trading；显式开启双重开关后可提交真实订单
   dailyreport/      # 汇总订单、风险事件、信号、快照等每日指标
   backupdb/         # 备份 SQLite data.db
   emergency/        # 本地人工急停开关
@@ -80,27 +83,58 @@ docs/
 参考 `.env.example` 设置本地变量。命令会自动读取当前目录下的 `.env.local` 和 `.env`；这两个文件已被 `.gitignore` 忽略。不要把真实 API key、secret、passphrase 或账户截图提交到仓库。
 
 ```bash
-DATABASE_DSN=/Users/guilinzhou/Desktop/test-nemo/gogogo/data.db
+DATABASE_DSN=data.db
 TRADING_MODE=dry_run
 EXCHANGE_NAME=onebullex
 ONEBULLEX_BASE_URL=https://futures-openapi.onebullex.com
 ONEBULLEX_API_KEY=
-	ONEBULLEX_SECRET_KEY=
+ONEBULLEX_SECRET_KEY=
 ONEBULLEX_LIVE_TRADING=false
 MAX_LEVERAGE=3
-BACKUP_PATH=/Users/guilinzhou/Desktop/test-nemo/gogogo/backups
+BACKUP_PATH=./backups
 ```
+
+## 一键启动本地交易链路
+
+默认使用 OneBullEx 线上公开行情驱动本地 paper 模拟仓，不会提交真实订单：
+
+```bash
+ONEBULLEX_LIVE_TRADING=false \
+SUBMIT_EXCHANGE=false \
+SYMBOL=BTCUSDT \
+ACCOUNT=paper \
+PROFILE=aggressive \
+EQUITY=1000 \
+POSITION_MODEL=AGGREGATION \
+./scripts/start-paper-local.sh
+```
+
+该脚本会初始化数据库，持续同步执行周期、`15m`、`1h` K 线以及标记价格和资金费率，并启动 `papertrade` 与 Dashboard。默认看板地址为 `http://localhost:8082`：
+
+```bash
+./scripts/status-paper-local.sh
+tail -f .runtime/logs/papertrade.log
+./scripts/stop-paper-local.sh
+```
+
+真实下单前先在 `.env.local` 配置 OneBullEx key。下面的命令会真实提交订单，并在启动时同步账户快照；`AGGREGATION` 表示单向持仓，双向持仓使用 `DISAGGREGATION`：
+
+```bash
+ONEBULLEX_LIVE_TRADING=true \
+SUBMIT_EXCHANGE=true \
+SYMBOL=BTCUSDT \
+ACCOUNT=live-main \
+PROFILE=aggressive \
+POSITION_MODEL=AGGREGATION \
+./scripts/start-paper-local.sh
+```
+
+完整启动参数、日志路径和托管方式见 [`docs/local-startup.md`](docs/local-startup.md)。
 
 ## 初始化数据库
 
 ```bash
-DATABASE_DSN=/Users/guilinzhou/Desktop/test-nemo/gogogo/data.db go run ./cmd/quantdb
-```
-
-也可以直接使用环境变量：
-
-```bash
-DATABASE_DSN=/Users/guilinzhou/Desktop/test-nemo/gogogo/data.db go run ./cmd/quantdb
+DATABASE_DSN=data.db go run ./cmd/quantdb
 ```
 
 ## 同步行情
@@ -109,7 +143,7 @@ DATABASE_DSN=/Users/guilinzhou/Desktop/test-nemo/gogogo/data.db go run ./cmd/qua
 
 ```bash
 go run ./cmd/marketsync \
-  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -dsn data.db \
   -dataset klines \
   -exchange onebullex \
   -market perpetual \
@@ -124,7 +158,7 @@ go run ./cmd/marketsync \
 
 ```bash
 go run ./cmd/marketsync \
-  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -dsn data.db \
   -dataset klines \
   -exchange onebullex \
   -market perpetual \
@@ -139,7 +173,7 @@ go run ./cmd/marketsync \
 
 ```bash
 go run ./cmd/marketsync \
-  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -dsn data.db \
   -dataset funding \
   -exchange onebullex \
   -market perpetual \
@@ -152,7 +186,7 @@ go run ./cmd/marketsync \
 
 ```bash
 go run ./cmd/marketsync \
-  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -dsn data.db \
   -dataset mark-price \
   -exchange onebullex \
   -market perpetual \
@@ -163,7 +197,7 @@ go run ./cmd/marketsync \
 
 ```bash
 go run ./cmd/marketsync \
-  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -dsn data.db \
   -dataset klines \
   -exchange onebullex \
   -market perpetual \
@@ -178,7 +212,7 @@ go run ./cmd/marketsync \
 
 ```bash
 go run ./cmd/marketsync \
-  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -dsn data.db \
   -dataset mark-price \
   -exchange onebullex \
   -market perpetual \
@@ -193,7 +227,7 @@ go run ./cmd/marketsync \
 
 ```bash
 go run ./cmd/datasnapshot \
-  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -dsn data.db \
   -exchange onebullex \
   -market perpetual \
   -symbols BTCUSDT \
@@ -207,7 +241,7 @@ go run ./cmd/datasnapshot \
 
 ```bash
 go run ./cmd/datasnapshot \
-  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -dsn data.db \
   -exchange onebullex \
   -market perpetual \
   -symbols BTCUSDT \
@@ -223,7 +257,7 @@ go run ./cmd/datasnapshot \
 
 ```bash
 go run ./cmd/backtest \
-  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -dsn data.db \
   -exchange onebullex \
   -market perpetual \
   -symbol BTCUSDT \
@@ -247,7 +281,7 @@ go run ./cmd/backtest \
 
 ```bash
 go run ./cmd/backtest \
-  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -dsn data.db \
   -exchange onebullex \
   -market perpetual \
   -symbol BTCUSDT \
@@ -269,7 +303,7 @@ go run ./cmd/backtest \
 
 ```bash
 go run ./cmd/backtestreport \
-  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -dsn data.db \
   -sort excess \
   -limit 10
 ```
@@ -278,7 +312,7 @@ go run ./cmd/backtestreport \
 
 ```bash
 go run ./cmd/backtestreport \
-  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -dsn data.db \
   -sort total \
   -limit 10
 ```
@@ -288,7 +322,7 @@ go run ./cmd/backtestreport \
 启动本地网页看板：
 
 ```bash
-HTTP_ADDR=:8081 DATABASE_DSN=/Users/guilinzhou/Desktop/test-nemo/gogogo/data.db go run ./cmd/dashboard
+HTTP_ADDR=:8081 DATABASE_DSN=data.db go run ./cmd/dashboard
 ```
 
 浏览器访问：
@@ -347,7 +381,7 @@ go run ./cmd/riskcheck \
 
 ```bash
 go run ./cmd/dryrunorder \
-  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -dsn data.db \
   -account research \
   -strategy manual-dry-run \
   -client-order-id dryrun-btc-perp-allow-20260712 \
@@ -367,7 +401,7 @@ go run ./cmd/dryrunorder \
 
 ```bash
 go run ./cmd/dryrunorder \
-  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -dsn data.db \
   -account research \
   -strategy manual-dry-run \
   -client-order-id dryrun-sol-perp-reject-20260712 \
@@ -389,7 +423,7 @@ go run ./cmd/dryrunorder \
 
 ```bash
 go run ./cmd/accountsnapshot \
-  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -dsn data.db \
   -account paper \
   -exchange onebullex \
   -market perpetual \
@@ -411,7 +445,7 @@ go run ./cmd/accountsnapshot \
 ```bash
 ONEBULLEX_API_KEY=... ONEBULLEX_SECRET_KEY=... \
 go run ./cmd/accountsnapshot \
-  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -dsn data.db \
   -account live-readonly \
   -exchange onebullex \
   -market perpetual \
@@ -422,11 +456,11 @@ go run ./cmd/accountsnapshot \
 
 基于已同步的 OneBullEx 本地 K 线运行 paper trading，并写入 `backtest_runs`、`strategy_runs`、`signals`、`performance_snapshots`。如果最新信号是开多或开空，会额外写入订单审计和 `paper_positions`；之后每轮用最新真实行情结算当前持仓、未实现盈亏、止盈和止损，并同步更新 `balances`、`positions`、`margin_snapshots`。
 
-默认运行当前短线 `scalp-tpsl` 策略，周期为 `5m`，止盈止损默认按 ATR 动态计算；如需只跑基线对比，可显式传 `-strategy-type sma`。
+默认运行当前短线 `scalp-tpsl` 策略，周期为 `5m`，止盈止损按 ATR 动态计算。高周期趋势过滤默认开启，要求 `15m EMA20/60` 与 `1h EMA20/60` 同向才允许新开仓；浮盈达到 `1R` 后启用保本止损，达到 `1.5R` 后按 `1.2 * ATR` 追踪止损。日亏损达到 `2%` 或连续亏损达到 `3` 次时停止新开仓。如需只跑基线对比，可显式传 `-strategy-type sma`。
 
 ```bash
 go run ./cmd/papertrade \
-  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -dsn data.db \
   -account paper \
   -strategy perp-trend-scalp-v2-paper \
   -exchange onebullex \
@@ -446,15 +480,20 @@ go run ./cmd/papertrade \
   -max-stop-loss-pct 0.75 \
   -signal-filter=true \
   -min-signal-score 0.55 \
+  -trend-filter=true \
+  -trend-interval 15m \
+  -macro-trend-interval 1h \
   -equity 10000 \
   -quantity 0.01
 ```
+
+启用趋势过滤前需同步对应的 `15m` 和 `1h` K 线；一键启动脚本会自动完成这些同步。单独调试且尚无高周期数据时，可临时传 `-trend-filter=false`。
 
 短线 TP/SL 版本会用更短均线窗口提高交易频次，并把按 ATR 计算的止盈价、止损价写入 `orders`。开仓前还会计算 `signal_score`，低于 `-min-signal-score` 的候选开仓会被过滤成观望，并把候选动作、特征和过滤原因写入 `signals.raw_features_json`。小资金想更激进时优先使用 `-profile aggressive`，该档会切到 `3m` 且评分阈值为 `0.50`：
 
 ```bash
 go run ./cmd/papertrade \
-  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -dsn data.db \
   -account paper \
   -strategy-type scalp-tpsl \
   -exchange onebullex \
@@ -471,7 +510,7 @@ go run ./cmd/papertrade \
 
 ```bash
 go run ./cmd/papertrade \
-  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -dsn data.db \
   -account paper \
   -profile aggressive \
   -symbol BTCUSDT \
@@ -486,7 +525,7 @@ go run ./cmd/papertrade \
 
 ```bash
 go run ./cmd/dailyreport \
-  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -dsn data.db \
   -since 2026-07-12T00:00:00Z
 ```
 
@@ -495,8 +534,8 @@ go run ./cmd/dailyreport \
 把当前 SQLite 数据库复制到备份目录：
 
 ```bash
-BACKUP_PATH=/Users/guilinzhou/Desktop/test-nemo/gogogo/backups \
-DATABASE_DSN=/Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+BACKUP_PATH=./backups \
+DATABASE_DSN=data.db \
 go run ./cmd/backupdb
 ```
 

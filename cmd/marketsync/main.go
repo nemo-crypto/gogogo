@@ -12,13 +12,15 @@ import (
 	exchangemodel "gogogo/internal/exchange"
 	"gogogo/internal/exchange/onebullex"
 	"gogogo/internal/marketdata"
+	"gogogo/internal/portfolio"
+	"gogogo/internal/storage"
 )
 
 func main() {
 	var (
-		dsn        = flag.String("dsn", env("DATABASE_DSN", "/Users/guilinzhou/Desktop/test-nemo/gogogo/data.db"), "sqlite database path")
+		dsn        = flag.String("dsn", env("DATABASE_DSN", "data.db"), "sqlite database path")
 		exchange   = flag.String("exchange", env("EXCHANGE_NAME", onebullex.ExchangeName), "exchange name: onebullex")
-		dataset    = flag.String("dataset", "klines", "dataset: klines, funding, mark-price")
+		dataset    = flag.String("dataset", "klines", "dataset: klines, funding, mark-price, index-price, trades, order-book, contract-specs, leverage-brackets")
 		marketType = flag.String("market", "perpetual", "market type: perpetual")
 		symbols    = flag.String("symbols", "BTCUSDT", "comma-separated symbols")
 		interval   = flag.String("interval", "5m", "kline interval")
@@ -58,8 +60,12 @@ func main() {
 		log.Fatalf("open sqlite database: %v", err)
 	}
 	defer db.Close()
+	if err := storage.InitSQLiteSchema(ctx, db); err != nil {
+		log.Fatalf("init sqlite schema: %v", err)
+	}
 
 	repo := marketdata.NewSQLiteRepository(db)
+	portfolioRepo := portfolio.NewSQLiteRepository(db)
 	client, err := newMarketClient(*exchange)
 	if err != nil {
 		log.Fatal(err)
@@ -68,6 +74,7 @@ func main() {
 
 	request := syncBatchRequest{
 		repo:       repo,
+		portfolio:  portfolioRepo,
 		client:     client,
 		exchange:   exchangeName,
 		dataset:    *dataset,
@@ -98,6 +105,7 @@ func main() {
 
 type syncBatchRequest struct {
 	repo       *marketdata.SQLiteRepository
+	portfolio  *portfolio.SQLiteRepository
 	client     marketClient
 	exchange   string
 	dataset    string
@@ -116,10 +124,15 @@ func syncBatch(ctx context.Context, request syncBatchRequest) (int, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
+	if isGlobalDataset(request.dataset) {
+		return syncGlobalDataset(ctx, request)
+	}
+
 	total := 0
 	for _, symbol := range request.symbols {
 		count, err := syncSymbol(ctx, syncRequest{
 			repo:       request.repo,
+			portfolio:  request.portfolio,
 			client:     request.client,
 			exchange:   request.exchange,
 			dataset:    request.dataset,
@@ -170,6 +183,7 @@ func watchPublicMarketData(ctx context.Context, request syncBatchRequest) error 
 
 type syncRequest struct {
 	repo       *marketdata.SQLiteRepository
+	portfolio  *portfolio.SQLiteRepository
 	client     marketClient
 	exchange   string
 	dataset    string
@@ -196,6 +210,17 @@ func syncSymbol(ctx context.Context, request syncRequest) (int, error) {
 			return 0, fmt.Errorf("mark-price dataset requires market=perpetual")
 		}
 		return syncMarkPrice(ctx, request)
+	case "index-price", "index-prices":
+		if request.marketType != marketdata.MarketTypePerpetual {
+			return 0, fmt.Errorf("index-price dataset requires market=perpetual")
+		}
+		return syncIndexPrices(ctx, request)
+	case "trades", "deals":
+		return syncTrades(ctx, request)
+	case "order-book", "order-books", "depth":
+		return syncOrderBook(ctx, request)
+	case "leverage-brackets", "leverage":
+		return syncLeverageBrackets(ctx, request)
 	default:
 		return 0, fmt.Errorf("unsupported dataset %q", request.dataset)
 	}
@@ -283,6 +308,79 @@ func syncMarkPrice(ctx context.Context, request syncRequest) (int, error) {
 	return 1, nil
 }
 
+func syncIndexPrices(ctx context.Context, request syncRequest) (int, error) {
+	prices, err := request.client.IndexPrices(ctx, request.symbol)
+	if err != nil {
+		return 0, fmt.Errorf("sync %s %s index prices: %w", request.exchange, request.symbol, err)
+	}
+	for _, price := range prices {
+		if err := request.repo.UpsertIndexPrice(ctx, price); err != nil {
+			return 0, fmt.Errorf("write index price %s %s: %w", request.symbol, price.EventTime.Format(time.RFC3339), err)
+		}
+	}
+	log.Printf("synced %d index prices: exchange=%s symbol=%s", len(prices), request.exchange, request.symbol)
+	return len(prices), nil
+}
+
+func syncTrades(ctx context.Context, request syncRequest) (int, error) {
+	trades, err := request.client.RecentTrades(ctx, request.symbol, request.limit)
+	if err != nil {
+		return 0, fmt.Errorf("sync %s %s trades: %w", request.exchange, request.symbol, err)
+	}
+	for _, trade := range trades {
+		if err := request.repo.UpsertTrade(ctx, trade); err != nil {
+			return 0, fmt.Errorf("write trade %s %s: %w", request.symbol, trade.TradeID, err)
+		}
+	}
+	log.Printf("synced %d trades: exchange=%s symbol=%s", len(trades), request.exchange, request.symbol)
+	return len(trades), nil
+}
+
+func syncOrderBook(ctx context.Context, request syncRequest) (int, error) {
+	book, err := request.client.OrderBook(ctx, request.symbol, request.limit)
+	if err != nil {
+		return 0, fmt.Errorf("sync %s %s order book: %w", request.exchange, request.symbol, err)
+	}
+	if err := request.repo.UpsertOrderBook(ctx, book); err != nil {
+		return 0, fmt.Errorf("write order book %s %s: %w", request.symbol, book.EventTime.Format(time.RFC3339), err)
+	}
+	log.Printf("synced 1 order book: exchange=%s symbol=%s update_id=%d", request.exchange, request.symbol, book.UpdateID)
+	return 1, nil
+}
+
+func syncGlobalDataset(ctx context.Context, request syncBatchRequest) (int, error) {
+	switch strings.ToLower(strings.TrimSpace(request.dataset)) {
+	case "contract-specs", "symbols", "symbol-specs":
+		specs, err := request.client.SymbolSpecs(ctx)
+		if err != nil {
+			return 0, fmt.Errorf("sync %s contract specs: %w", request.exchange, err)
+		}
+		for _, spec := range specs {
+			if _, err := request.portfolio.SaveContractSpec(ctx, spec); err != nil {
+				return 0, fmt.Errorf("write contract spec %s: %w", spec.Symbol, err)
+			}
+		}
+		log.Printf("synced %d contract specs: exchange=%s", len(specs), request.exchange)
+		return len(specs), nil
+	default:
+		return 0, fmt.Errorf("unsupported global dataset %q", request.dataset)
+	}
+}
+
+func syncLeverageBrackets(ctx context.Context, request syncRequest) (int, error) {
+	brackets, err := request.client.LeverageBrackets(ctx, request.symbol)
+	if err != nil {
+		return 0, fmt.Errorf("sync %s %s leverage brackets: %w", request.exchange, request.symbol, err)
+	}
+	for _, bracket := range brackets {
+		if _, err := request.portfolio.SaveLeverageBracket(ctx, bracket); err != nil {
+			return 0, fmt.Errorf("write leverage bracket %s #%d: %w", bracket.Symbol, bracket.Bracket, err)
+		}
+	}
+	log.Printf("synced %d leverage brackets: exchange=%s symbol=%s", len(brackets), request.exchange, request.symbol)
+	return len(brackets), nil
+}
+
 func env(key string, fallback string) string {
 	return config.Env(key, fallback)
 }
@@ -291,6 +389,11 @@ type marketClient interface {
 	Klines(ctx context.Context, request exchangemodel.KlineRequest) ([]marketdata.Candle, error)
 	FundingRates(ctx context.Context, request exchangemodel.FundingRateRequest) ([]marketdata.FundingRate, error)
 	LatestMarkPrice(ctx context.Context, symbol string) (marketdata.MarkPrice, error)
+	IndexPrices(ctx context.Context, symbol string) ([]marketdata.IndexPrice, error)
+	RecentTrades(ctx context.Context, symbol string, limit int) ([]marketdata.Trade, error)
+	OrderBook(ctx context.Context, symbol string, level int) (marketdata.OrderBook, error)
+	SymbolSpecs(ctx context.Context) ([]portfolio.ContractSpec, error)
+	LeverageBrackets(ctx context.Context, symbol string) ([]portfolio.LeverageBracket, error)
 }
 
 func newMarketClient(exchangeName string) (marketClient, error) {
@@ -350,6 +453,15 @@ func normalizeLimit(limit int) int {
 func isKlineDataset(dataset string) bool {
 	switch strings.ToLower(strings.TrimSpace(dataset)) {
 	case "klines", "candles":
+		return true
+	default:
+		return false
+	}
+}
+
+func isGlobalDataset(dataset string) bool {
+	switch strings.ToLower(strings.TrimSpace(dataset)) {
+	case "contract-specs", "symbols", "symbol-specs":
 		return true
 	default:
 		return false

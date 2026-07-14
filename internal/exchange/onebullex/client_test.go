@@ -157,6 +157,65 @@ func TestClientLatestMarkPrice(t *testing.T) {
 	}
 }
 
+func TestClientPublicMetadataDatasets(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/public/symbol/list":
+			_, _ = w.Write([]byte(`{"returnCode":0,"msgInfo":"success","data":[{"symbol":"btc_usdt","contractType":"PERPETUAL","underlyingType":"USDT","contractSize":"1","tradeSwitch":true,"state":1,"initLeverage":10,"initPositionType":"CROSSED","baseCoin":"btc","quoteCoin":"usdt","quantityPrecision":3,"pricePrecision":1,"supportOrderType":"LIMIT,MARKET","supportTimeInForce":"GTC,IOC","supportPositionType":"LONG,SHORT","minPrice":"0.1","minQty":"0.001","minNotional":"5","maxNotional":"100000","makerFee":"0.0002","takerFee":"0.0004","labels":["perp"],"onboardDate":1655971200000,"minStepPrice":"0.1"}]}`))
+		case "/v2/public/leverage/bracket/detail":
+			_, _ = w.Write([]byte(`{"returnCode":0,"msgInfo":"success","data":{"symbol":"btc_usdt","leverageBrackets":[{"symbol":"btc_usdt","bracket":1,"maxNominalValue":"100000","maintMarginRate":"0.005","startMarginRate":"0.01","maxStartMarginRate":"0.02","maxLeverage":"100","minLeverage":"1"}]}}`))
+		case "/v2/public/q/index-price":
+			_, _ = w.Write([]byte(`{"returnCode":0,"msgInfo":"success","data":[{"s":"btc_usdt","p":"60000.00","t":1655971200000}]}`))
+		case "/v2/public/q/deal":
+			_, _ = w.Write([]byte(`{"returnCode":0,"msgInfo":"success","data":[{"s":"btc_usdt","t":1655971200000,"p":"60001.00","a":"0.01","m":"BUY"}]}`))
+		case "/v2/public/q/depth":
+			_, _ = w.Write([]byte(`{"returnCode":0,"msgInfo":"success","data":{"s":"btc_usdt","t":1655971200000,"u":99,"b":[["60000","1"]],"a":[["60001","2"]]}}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(WithBaseURL(server.URL), WithHTTPClient(server.Client()))
+	specs, err := client.SymbolSpecs(context.Background())
+	if err != nil {
+		t.Fatalf("symbol specs: %v", err)
+	}
+	if len(specs) != 1 || specs[0].Symbol != "BTCUSDT" || specs[0].MinStepPrice != "0.1" {
+		t.Fatalf("specs = %+v", specs)
+	}
+	brackets, err := client.LeverageBrackets(context.Background(), "BTCUSDT")
+	if err != nil {
+		t.Fatalf("leverage brackets: %v", err)
+	}
+	if len(brackets) != 1 || brackets[0].MaxLeverage != "100" {
+		t.Fatalf("brackets = %+v", brackets)
+	}
+	indexPrices, err := client.IndexPrices(context.Background(), "BTCUSDT")
+	if err != nil {
+		t.Fatalf("index prices: %v", err)
+	}
+	if len(indexPrices) != 1 || indexPrices[0].IndexPrice != "60000.00" {
+		t.Fatalf("index prices = %+v", indexPrices)
+	}
+	trades, err := client.RecentTrades(context.Background(), "BTCUSDT", 1)
+	if err != nil {
+		t.Fatalf("recent trades: %v", err)
+	}
+	if len(trades) != 1 || trades[0].Side != "BUY" {
+		t.Fatalf("trades = %+v", trades)
+	}
+	book, err := client.OrderBook(context.Background(), "BTCUSDT", 1)
+	if err != nil {
+		t.Fatalf("order book: %v", err)
+	}
+	if book.UpdateID != 99 || book.BidsJSON == "" || book.AsksJSON == "" {
+		t.Fatalf("book = %+v", book)
+	}
+}
+
 func TestClientAccountSnapshotUsesSignedRequests(t *testing.T) {
 	t.Parallel()
 
@@ -167,7 +226,7 @@ func TestClientAccountSnapshotUsesSignedRequests(t *testing.T) {
 			_, _ = w.Write([]byte(`{"returnCode":0,"msgInfo":"success","data":[{"coin":"USDT","walletBalance":"1000","openOrderMarginFrozen":"5","isolatedMargin":"20","crossedMargin":"10","availableBalance":"965","bonus":"0"}]}`))
 		case "/v2/position/list":
 			assertSignedHeaders(t, r)
-			_, _ = w.Write([]byte(`{"returnCode":0,"msgInfo":"success","data":[{"symbol":"btc_usdt","positionId":"1","positionType":"ISOLATED","positionSide":"LONG","positionSize":"0.01","entryPrice":"43000","realizedProfit":"0","leverage":3,"contractSize":"1"}]}`))
+			_, _ = w.Write([]byte(`{"returnCode":0,"msgInfo":"success","data":[{"symbol":"btc_usdt","positionId":"1","positionType":"ISOLATED","positionModel":"AGGREGATION","positionSide":"LONG","positionSize":"0.01","entryPrice":"43000","realizedProfit":"0","leverage":3,"contractSize":"1"}]}`))
 		case "/v2/public/time":
 			_, _ = w.Write([]byte(`{"returnCode":0,"msgInfo":"success","data":1655971200000}`))
 		case "/v2/public/q/symbol-mark-price":
@@ -201,7 +260,7 @@ func TestClientAccountSnapshotUsesSignedRequests(t *testing.T) {
 		t.Fatalf("positions length = %d, want 1", len(snapshot.Positions))
 	}
 	position := snapshot.Positions[0]
-	if position.Symbol != "BTCUSDT" || position.PositionSide != "long" || position.MarkPrice != "43625.10" {
+	if position.Symbol != "BTCUSDT" || position.PositionSide != "long" || position.PositionModel != "AGGREGATION" || position.MarkPrice != "43625.10" {
 		t.Fatalf("position = %+v", position)
 	}
 }
@@ -279,6 +338,89 @@ func TestSubmitOrderSendsNativeTPSL(t *testing.T) {
 	}
 	if status.ExchangeOrderID != "123456" || status.Status != "FILLED" {
 		t.Fatalf("status = %+v, want filled 123456", status)
+	}
+}
+
+func TestClientPositionConfigs(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/position/confs" {
+			t.Fatalf("path = %s, want /v2/position/confs", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("symbol"); got != "btc_usdt" {
+			t.Fatalf("symbol = %s, want btc_usdt", got)
+		}
+		assertSignedHeaders(t, r)
+		_, _ = w.Write([]byte(`{"returnCode":0,"msgInfo":"success","data":[{"symbol":"btc_usdt","positionType":"CROSSED","positionSide":"BOTH","positionModel":"AGGREGATION","autoMargin":true,"leverage":10}]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(
+		WithBaseURL(server.URL),
+		WithHTTPClient(server.Client()),
+		WithCredentials("key", "secret"),
+		WithNonceFunc(func() (string, error) { return "nonce", nil }),
+		WithNowFunc(func() time.Time { return time.Unix(1655971200, 0).UTC() }),
+	)
+	configs, err := client.PositionConfigs(context.Background(), "research", "BTCUSDT")
+	if err != nil {
+		t.Fatalf("position configs: %v", err)
+	}
+	if len(configs) != 1 {
+		t.Fatalf("configs length = %d, want 1", len(configs))
+	}
+	config := configs[0]
+	if config.Symbol != "BTCUSDT" || config.PositionSide != "both" || config.PositionModel != "AGGREGATION" || config.Leverage != 10 {
+		t.Fatalf("config = %+v", config)
+	}
+}
+
+func TestSubmitOrderUsesBothForAggregationPositionModel(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/order/create":
+			assertSignedHeaders(t, r)
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode order body: %v", err)
+			}
+			if body["positionSide"] != "BOTH" {
+				t.Fatalf("positionSide = %v, want BOTH", body["positionSide"])
+			}
+			_, _ = w.Write([]byte(`{"returnCode":0,"msgInfo":"success","data":"123456"}`))
+		case "/v2/order/detail":
+			assertSignedHeaders(t, r)
+			_, _ = w.Write([]byte(`{"returnCode":0,"msgInfo":"success","data":{"orderId":"123456","clientOrderId":"oneway","positionSide":"BOTH","state":"NEW","createdTime":1655971200000}}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(
+		WithBaseURL(server.URL),
+		WithHTTPClient(server.Client()),
+		WithCredentials("key", "secret"),
+		WithTradingEnabled(true),
+		WithNonceFunc(func() (string, error) { return "nonce", nil }),
+		WithNowFunc(func() time.Time { return time.Unix(1655971200, 0).UTC() }),
+	)
+	status, err := client.SubmitOrder(context.Background(), exchange.OrderRequest{
+		Symbol:        "BTCUSDT",
+		ClientOrderID: "oneway",
+		Side:          "BUY",
+		OrderType:     "MARKET",
+		PositionModel: "aggregation",
+		Quantity:      "0.001",
+	})
+	if err != nil {
+		t.Fatalf("submit order: %v", err)
+	}
+	if status.PositionSide != "BOTH" {
+		t.Fatalf("status position side = %q, want BOTH", status.PositionSide)
 	}
 }
 

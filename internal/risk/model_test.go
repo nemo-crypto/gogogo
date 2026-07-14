@@ -250,6 +250,34 @@ func TestEvaluateOrderHaltsOnDailyLoss(t *testing.T) {
 	}
 }
 
+func TestEvaluateOrderAllowsReduceOnlyDuringDailyLossHalt(t *testing.T) {
+	t.Parallel()
+
+	result, err := EvaluateOrder(DefaultConfig(), AccountSnapshot{
+		AccountID:             "research",
+		Equity:                10_000,
+		DailyRealizedPnL:      -250,
+		ConsecutiveLosses:     3,
+		CurrentTotalExposure:  2_000,
+		CurrentSymbolExposure: 2_000,
+	}, OrderIntent{
+		Exchange:   "onebullex",
+		MarketType: MarketTypePerpetual,
+		Symbol:     "BTCUSDT",
+		Side:       SideSell,
+		Price:      60_000,
+		Quantity:   0.01,
+		Leverage:   2,
+		ReduceOnly: true,
+	})
+	if err != nil {
+		t.Fatalf("evaluate order: %v", err)
+	}
+	if result.Decision != DecisionAllow {
+		t.Fatalf("decision = %s, want allow, events=%v", result.Decision, result.Events)
+	}
+}
+
 func hasEvent(result Result, eventType string) bool {
 	for _, event := range result.Events {
 		if event.Type == eventType {

@@ -16,7 +16,7 @@ import (
 
 func main() {
 	var (
-		dsn           = flag.String("dsn", env("DATABASE_DSN", "/Users/guilinzhou/Desktop/test-nemo/gogogo/data.db"), "sqlite database path")
+		dsn           = flag.String("dsn", env("DATABASE_DSN", "data.db"), "sqlite database path")
 		exchange      = flag.String("exchange", env("EXCHANGE_NAME", "onebullex"), "exchange name")
 		marketType    = flag.String("market", "perpetual", "market type: perpetual")
 		symbols       = flag.String("symbol", "BTCUSDT", "symbol or comma-separated symbols")

@@ -210,6 +210,71 @@ func TestSQLiteRepositoryCreateCandleSnapshot(t *testing.T) {
 	}
 }
 
+func TestSQLiteRepositoryUpsertsPublicMarketRawData(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repo := newTestRepository(t, ctx)
+	now := time.Date(2026, 7, 14, 9, 30, 0, 0, time.UTC)
+
+	if err := repo.UpsertTrade(ctx, Trade{
+		Exchange:   "onebullex",
+		MarketType: MarketTypePerpetual,
+		Symbol:     "btcusdt",
+		TradeID:    "trade-1",
+		Price:      "60000.10",
+		Quantity:   "0.01",
+		Side:       "BUY",
+		TradeTime:  now,
+		RawJSON:    `{"s":"btc_usdt"}`,
+	}); err != nil {
+		t.Fatalf("upsert trade: %v", err)
+	}
+	if err := repo.UpsertOrderBook(ctx, OrderBook{
+		Exchange:   "onebullex",
+		MarketType: MarketTypePerpetual,
+		Symbol:     "btcusdt",
+		EventTime:  now,
+		UpdateID:   99,
+		BidsJSON:   `[["60000","1"]]`,
+		AsksJSON:   `[["60001","2"]]`,
+		RawJSON:    `{"u":99}`,
+	}); err != nil {
+		t.Fatalf("upsert order book: %v", err)
+	}
+	if err := repo.UpsertIndexPrice(ctx, IndexPrice{
+		Exchange:   "onebullex",
+		Symbol:     "btcusdt",
+		EventTime:  now,
+		IndexPrice: "59990.00",
+		RawJSON:    `{"p":"59990.00"}`,
+	}); err != nil {
+		t.Fatalf("upsert index price: %v", err)
+	}
+
+	var tradeRaw string
+	if err := repo.db.QueryRowContext(ctx, `SELECT raw_json FROM trades WHERE trade_id = 'trade-1';`).Scan(&tradeRaw); err != nil {
+		t.Fatalf("query trade raw: %v", err)
+	}
+	if tradeRaw == "" {
+		t.Fatal("trade raw json is empty")
+	}
+	var updateID int64
+	if err := repo.db.QueryRowContext(ctx, `SELECT update_id FROM order_books WHERE symbol = 'BTCUSDT';`).Scan(&updateID); err != nil {
+		t.Fatalf("query order book update id: %v", err)
+	}
+	if updateID != 99 {
+		t.Fatalf("update id = %d, want 99", updateID)
+	}
+	var indexRaw string
+	if err := repo.db.QueryRowContext(ctx, `SELECT raw_json FROM index_prices WHERE symbol = 'BTCUSDT';`).Scan(&indexRaw); err != nil {
+		t.Fatalf("query index price raw: %v", err)
+	}
+	if indexRaw == "" {
+		t.Fatal("index price raw json is empty")
+	}
+}
+
 func newTestRepository(t *testing.T, ctx context.Context) *SQLiteRepository {
 	t.Helper()
 

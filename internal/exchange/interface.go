@@ -18,24 +18,41 @@ type AccountSnapshot struct {
 }
 
 type Balance struct {
-	Asset     string
-	Free      string
-	Locked    string
-	Total     string
-	USDValue  string
-	UpdatedAt time.Time
+	Asset                 string
+	Free                  string
+	Locked                string
+	Total                 string
+	USDValue              string
+	WalletBalance         string
+	OpenOrderMarginFrozen string
+	IsolatedMargin        string
+	CrossedMargin         string
+	AvailableBalance      string
+	Bonus                 string
+	RawJSON               string
+	UpdatedAt             time.Time
 }
 
 type Position struct {
 	Symbol           string
+	PositionID       string
 	PositionSide     string
+	PositionModel    string
 	Quantity         string
+	CloseOrderSize   string
+	AvailableClose   string
 	EntryPrice       string
 	MarkPrice        string
 	LiquidationPrice string
 	Leverage         int
 	MarginMode       string
+	IsolatedMargin   string
+	OrderMargin      string
+	RealizedProfit   string
+	AutoMargin       bool
+	ContractSize     string
 	UnrealizedPnL    string
+	RawJSON          string
 	UpdatedAt        time.Time
 }
 
@@ -46,22 +63,46 @@ type OrderRequest struct {
 	ClientOrderID      string
 	Side               string
 	OrderType          string
+	PositionSide       string
+	PositionModel      string
+	PositionID         string
 	TimeInForce        string
 	ReduceOnly         bool
 	Price              string
 	Quantity           string
+	Leverage           int
 	TriggerProfitPrice string
 	TriggerStopPrice   string
 	ProfitOrderType    string
 	StopOrderType      string
+	ProfitOrderPrice   string
+	StopOrderPrice     string
+	MarketOrderLevel   int
 }
 
 type OrderStatus struct {
-	ClientOrderID   string
-	ExchangeOrderID string
-	Status          string
-	ExecutedQty     string
-	UpdatedAt       time.Time
+	ClientOrderID      string
+	ExchangeOrderID    string
+	PositionID         string
+	Symbol             string
+	OrderType          string
+	OrderSide          string
+	PositionSide       string
+	TimeInForce        string
+	Price              string
+	OrigQty            string
+	AvgPrice           string
+	ExecutedQty        string
+	MarginFrozen       string
+	TriggerProfitPrice string
+	TriggerStopPrice   string
+	SourceID           string
+	ForceClose         bool
+	CloseProfit        string
+	Status             string
+	RawJSON            string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 type Client interface {

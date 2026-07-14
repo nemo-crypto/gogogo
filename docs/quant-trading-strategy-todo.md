@@ -255,7 +255,7 @@ docs/
 
 #### MVP 阶段
 
-- SQLite：适合当前 Go 项目快速启动，前期统一使用 `/Users/guilinzhou/Desktop/test-nemo/gogogo/data.db` 存储 K 线、订单、成交、策略信号和账户快照。
+- SQLite：适合当前 Go 项目快速启动，前期统一使用 `data.db` 存储 K 线、订单、成交、策略信号和账户快照。
 - 本地文件：用于导出回测报告、每日交易报告和压缩备份。
 - 内存缓存：只用于最近行情窗口和策略计算，不作为事实来源。
 
@@ -504,7 +504,7 @@ MAX_LEVERAGE=3
 MAX_DAILY_LOSS_PCT=2
 MAX_POSITION_PCT=30
 MAX_NOTIONAL_EXPOSURE_PCT=100
-DATABASE_DSN=/Users/guilinzhou/Desktop/test-nemo/gogogo/data.db
+DATABASE_DSN=data.db
 DATA_RETENTION_DAYS=1095
 CANDLE_SYNC_BATCH_SIZE=1000
 BACKUP_PATH=./backups

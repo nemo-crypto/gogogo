@@ -18,7 +18,7 @@ func main() {
 }
 
 func run() error {
-	source := env("DATABASE_DSN", "/Users/guilinzhou/Desktop/test-nemo/gogogo/data.db")
+	source := env("DATABASE_DSN", "data.db")
 	backupDir := env("BACKUP_PATH", "./backups")
 	if err := os.MkdirAll(backupDir, 0o755); err != nil {
 		return fmt.Errorf("create backup dir: %w", err)

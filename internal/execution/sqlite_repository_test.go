@@ -134,6 +134,7 @@ func TestSQLiteRepositorySubmitOrderToExchangeIncludesNativeTPSL(t *testing.T) {
 		StrategyID:      "unit",
 		OrderType:       "market",
 		TimeInForce:     "IOC",
+		PositionModel:   "aggregation",
 		TakeProfitPrice: 60_900,
 	})
 	if err != nil {
@@ -153,6 +154,9 @@ func TestSQLiteRepositorySubmitOrderToExchangeIncludesNativeTPSL(t *testing.T) {
 	}
 	if client.request.ProfitOrderType != "MARKET" || client.request.StopOrderType != "MARKET" {
 		t.Fatalf("protection order types = %q/%q, want MARKET/MARKET", client.request.ProfitOrderType, client.request.StopOrderType)
+	}
+	if client.request.PositionModel != "AGGREGATION" {
+		t.Fatalf("position model = %q, want AGGREGATION", client.request.PositionModel)
 	}
 }
 

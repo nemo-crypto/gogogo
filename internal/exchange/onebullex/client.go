@@ -20,6 +20,7 @@ import (
 
 	exchangemodel "gogogo/internal/exchange"
 	"gogogo/internal/marketdata"
+	"gogogo/internal/portfolio"
 )
 
 const (
@@ -232,7 +233,157 @@ func (c *Client) LatestMarkPrice(ctx context.Context, symbol string) (marketdata
 		EventTime:  time.UnixMilli(rawMark.Timestamp).UTC(),
 		MarkPrice:  rawMark.Price,
 		IndexPrice: indexPrice,
+		RawJSON:    rawJSON(rawMark),
 	}, nil
+}
+
+func (c *Client) IndexPrices(ctx context.Context, symbol string) ([]marketdata.IndexPrice, error) {
+	query := url.Values{}
+	if strings.TrimSpace(symbol) != "" {
+		query.Set("symbol", ToExchangeSymbol(symbol))
+	}
+	var raw rawPriceList
+	if err := c.publicGET(ctx, "/v2/public/q/index-price", query, &raw); err != nil {
+		return nil, err
+	}
+	prices := make([]marketdata.IndexPrice, 0, len(raw))
+	for _, item := range raw {
+		if item.Timestamp <= 0 || item.Price == "" {
+			continue
+		}
+		prices = append(prices, marketdata.IndexPrice{
+			Exchange:   ExchangeName,
+			Symbol:     FromExchangeSymbol(firstNonEmpty(item.Symbol, symbol)),
+			EventTime:  time.UnixMilli(item.Timestamp).UTC(),
+			IndexPrice: item.Price,
+			RawJSON:    rawJSON(item),
+		})
+	}
+	return prices, nil
+}
+
+func (c *Client) RecentTrades(ctx context.Context, symbol string, limit int) ([]marketdata.Trade, error) {
+	symbol = normalizeSymbol(symbol)
+	if symbol == "" {
+		return nil, errors.New("symbol is required")
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	query := url.Values{}
+	query.Set("symbol", ToExchangeSymbol(symbol))
+	query.Set("num", strconv.Itoa(limit))
+	var raw []rawDeal
+	if err := c.publicGET(ctx, "/v2/public/q/deal", query, &raw); err != nil {
+		return nil, err
+	}
+	trades := make([]marketdata.Trade, 0, len(raw))
+	for _, item := range raw {
+		trade := item.toTrade(symbol)
+		if trade.TradeID == "" {
+			continue
+		}
+		trades = append(trades, trade)
+	}
+	return trades, nil
+}
+
+func (c *Client) OrderBook(ctx context.Context, symbol string, level int) (marketdata.OrderBook, error) {
+	symbol = normalizeSymbol(symbol)
+	if symbol == "" {
+		return marketdata.OrderBook{}, errors.New("symbol is required")
+	}
+	if level <= 0 {
+		level = 20
+	}
+	if level > 50 {
+		level = 50
+	}
+	query := url.Values{}
+	query.Set("symbol", ToExchangeSymbol(symbol))
+	query.Set("level", strconv.Itoa(level))
+	var raw rawDepth
+	if err := c.publicGET(ctx, "/v2/public/q/depth", query, &raw); err != nil {
+		return marketdata.OrderBook{}, err
+	}
+	return raw.toOrderBook(symbol)
+}
+
+func (c *Client) SymbolSpecs(ctx context.Context) ([]portfolio.ContractSpec, error) {
+	var raw []rawSymbolSpec
+	if err := c.publicGET(ctx, "/v2/public/symbol/list", nil, &raw); err != nil {
+		return nil, err
+	}
+	specs := make([]portfolio.ContractSpec, 0, len(raw))
+	for _, item := range raw {
+		spec := item.toContractSpec()
+		if spec.Symbol == "" {
+			continue
+		}
+		specs = append(specs, spec)
+	}
+	return specs, nil
+}
+
+func (c *Client) LeverageBrackets(ctx context.Context, symbol string) ([]portfolio.LeverageBracket, error) {
+	query := url.Values{}
+	if strings.TrimSpace(symbol) != "" {
+		query.Set("symbol", ToExchangeSymbol(symbol))
+		var raw rawSymbolBracket
+		if err := c.publicGET(ctx, "/v2/public/leverage/bracket/detail", query, &raw); err != nil {
+			return nil, err
+		}
+		return raw.toLeverageBrackets(), nil
+	}
+	var raw []rawSymbolBracket
+	if err := c.publicGET(ctx, "/v2/public/leverage/bracket/list", nil, &raw); err != nil {
+		return nil, err
+	}
+	brackets := make([]portfolio.LeverageBracket, 0)
+	for _, item := range raw {
+		brackets = append(brackets, item.toLeverageBrackets()...)
+	}
+	return brackets, nil
+}
+
+type PositionModeRequest struct {
+	Symbol        string
+	PositionType  string
+	PositionModel string
+}
+
+func (c *Client) PositionConfigs(ctx context.Context, accountID string, symbol string) ([]portfolio.PositionConfig, error) {
+	symbol = normalizeSymbol(symbol)
+	if symbol == "" {
+		return nil, errors.New("symbol is required")
+	}
+	query := url.Values{}
+	query.Set("symbol", ToExchangeSymbol(symbol))
+	var raw []rawPositionConfig
+	if err := c.signedGET(ctx, "/v2/position/confs", query, &raw); err != nil {
+		return nil, err
+	}
+	snapshotTime := c.nowFunc().UTC()
+	configs := make([]portfolio.PositionConfig, 0, len(raw))
+	for _, item := range raw {
+		configs = append(configs, item.toPositionConfig(accountID, snapshotTime))
+	}
+	return configs, nil
+}
+
+func (c *Client) ChangePositionMode(ctx context.Context, request PositionModeRequest) error {
+	symbol := normalizeSymbol(request.Symbol)
+	positionType := strings.ToUpper(strings.TrimSpace(request.PositionType))
+	positionModel := normalizePositionModel(request.PositionModel)
+	if symbol == "" || positionType == "" || positionModel == "" {
+		return errors.New("symbol, position type and position model are required")
+	}
+	body := map[string]any{
+		"symbol":        ToExchangeSymbol(symbol),
+		"positionType":  positionType,
+		"positionModel": positionModel,
+	}
+	return c.signedPOST(ctx, "/v2/position/change-type", body, nil)
 }
 
 func (c *Client) ServerTime(ctx context.Context, _ marketdata.MarketType) (time.Time, error) {
@@ -391,9 +542,18 @@ func (c *Client) orderBody(request exchangemodel.OrderRequest) (map[string]any, 
 		return nil, errors.New("price is required for limit order")
 	}
 
-	positionSide, err := inferPositionSide(side, request.ReduceOnly)
-	if err != nil {
-		return nil, err
+	positionModel := normalizePositionModel(request.PositionModel)
+	positionSide := normalizePositionSide(request.PositionSide)
+	if positionSide == "" {
+		if isAggregationPositionModel(positionModel) {
+			positionSide = "BOTH"
+		} else {
+			var err error
+			positionSide, err = inferPositionSide(side, request.ReduceOnly)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	body := map[string]any{
@@ -412,6 +572,12 @@ func (c *Client) orderBody(request exchangemodel.OrderRequest) (map[string]any, 
 	if request.TimeInForce != "" {
 		body["timeInForce"] = strings.ToUpper(strings.TrimSpace(request.TimeInForce))
 	}
+	if request.PositionID != "" {
+		body["positionId"] = strings.TrimSpace(request.PositionID)
+	}
+	if request.Leverage > 0 {
+		body["leverage"] = request.Leverage
+	}
 	if request.ReduceOnly {
 		body["reduceOnly"] = true
 	}
@@ -426,6 +592,15 @@ func (c *Client) orderBody(request exchangemodel.OrderRequest) (map[string]any, 
 	}
 	if request.StopOrderType != "" {
 		body["stopOrderType"] = strings.ToUpper(strings.TrimSpace(request.StopOrderType))
+	}
+	if request.ProfitOrderPrice != "" {
+		body["profitOrderPrice"] = strings.TrimSpace(request.ProfitOrderPrice)
+	}
+	if request.StopOrderPrice != "" {
+		body["stopOrderPrice"] = strings.TrimSpace(request.StopOrderPrice)
+	}
+	if request.MarketOrderLevel > 0 {
+		body["marketOrderLevel"] = request.MarketOrderLevel
 	}
 	return body, nil
 }
@@ -753,6 +928,32 @@ func inferPositionSide(orderSide string, reduceOnly bool) (string, error) {
 	}
 }
 
+func normalizePositionSide(value string) string {
+	normalized := strings.ToUpper(strings.TrimSpace(value))
+	switch normalized {
+	case "ONE_WAY", "ONEWAY":
+		return "BOTH"
+	default:
+		return normalized
+	}
+}
+
+func normalizePositionModel(value string) string {
+	normalized := strings.ToUpper(strings.TrimSpace(value))
+	switch normalized {
+	case "LONG_SHORT":
+		return "DISAGGREGATION"
+	case "ONE_WAY", "ONEWAY":
+		return "AGGREGATION"
+	default:
+		return normalized
+	}
+}
+
+func isAggregationPositionModel(value string) bool {
+	return normalizePositionModel(value) == "AGGREGATION"
+}
+
 func randomNonce() (string, error) {
 	var value [16]byte
 	if _, err := rand.Read(value[:]); err != nil {
@@ -863,6 +1064,64 @@ func (l *rawPriceList) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+type rawDeal struct {
+	Timestamp int64  `json:"t"`
+	Symbol    string `json:"s"`
+	Price     string `json:"p"`
+	Amount    string `json:"a"`
+	Side      string `json:"m"`
+}
+
+func (r rawDeal) toTrade(symbol string) marketdata.Trade {
+	if r.Symbol != "" {
+		symbol = FromExchangeSymbol(r.Symbol)
+	}
+	tradeID := fmt.Sprintf("%s-%d-%s-%s-%s", symbol, r.Timestamp, r.Price, r.Amount, strings.ToUpper(strings.TrimSpace(r.Side)))
+	return marketdata.Trade{
+		Exchange:   ExchangeName,
+		MarketType: marketdata.MarketTypePerpetual,
+		Symbol:     symbol,
+		TradeID:    tradeID,
+		Price:      r.Price,
+		Quantity:   r.Amount,
+		Side:       r.Side,
+		TradeTime:  time.UnixMilli(r.Timestamp).UTC(),
+		RawJSON:    rawJSON(r),
+	}
+}
+
+type rawDepth struct {
+	Timestamp int64      `json:"t"`
+	Symbol    string     `json:"s"`
+	UpdateID  int64      `json:"u"`
+	Bids      [][]string `json:"b"`
+	Asks      [][]string `json:"a"`
+}
+
+func (r rawDepth) toOrderBook(symbol string) (marketdata.OrderBook, error) {
+	if r.Symbol != "" {
+		symbol = FromExchangeSymbol(r.Symbol)
+	}
+	bids, err := json.Marshal(r.Bids)
+	if err != nil {
+		return marketdata.OrderBook{}, err
+	}
+	asks, err := json.Marshal(r.Asks)
+	if err != nil {
+		return marketdata.OrderBook{}, err
+	}
+	return marketdata.OrderBook{
+		Exchange:   ExchangeName,
+		MarketType: marketdata.MarketTypePerpetual,
+		Symbol:     symbol,
+		EventTime:  time.UnixMilli(r.Timestamp).UTC(),
+		UpdateID:   r.UpdateID,
+		BidsJSON:   string(bids),
+		AsksJSON:   string(asks),
+		RawJSON:    rawJSON(r),
+	}, nil
+}
+
 type rawFundingRate struct {
 	Symbol             string `json:"symbol"`
 	FundingRate        string `json:"fundingRate"`
@@ -880,6 +1139,7 @@ func (r rawFundingRate) toFundingRate(symbol string, markPrice string) marketdat
 		FundingRate: r.FundingRate,
 		MarkPrice:   markPrice,
 		IndexPrice:  markPrice,
+		RawJSON:     rawJSON(r),
 	}
 }
 
@@ -902,6 +1162,7 @@ func (r rawFundingRateRecord) toFundingRate(symbol string, markPrice string) mar
 		FundingRate: r.FundingRate,
 		MarkPrice:   markPrice,
 		IndexPrice:  markPrice,
+		RawJSON:     rawJSON(r),
 	}
 }
 
@@ -939,12 +1200,19 @@ func (r rawBalance) toBalance(snapshotTime time.Time) exchangemodel.Balance {
 	locked := parseDecimal(r.OpenOrderMarginFrozen) + parseDecimal(r.IsolatedMargin) + parseDecimal(r.CrossedMargin)
 	total := firstNonEmpty(r.WalletBalance, formatDecimal(parseDecimal(r.AvailableBalance)+locked))
 	return exchangemodel.Balance{
-		Asset:     strings.ToUpper(strings.TrimSpace(r.Coin)),
-		Free:      r.AvailableBalance,
-		Locked:    formatDecimal(locked),
-		Total:     total,
-		USDValue:  total,
-		UpdatedAt: snapshotTime,
+		Asset:                 strings.ToUpper(strings.TrimSpace(r.Coin)),
+		Free:                  r.AvailableBalance,
+		Locked:                formatDecimal(locked),
+		Total:                 total,
+		USDValue:              total,
+		WalletBalance:         r.WalletBalance,
+		OpenOrderMarginFrozen: r.OpenOrderMarginFrozen,
+		IsolatedMargin:        r.IsolatedMargin,
+		CrossedMargin:         r.CrossedMargin,
+		AvailableBalance:      r.AvailableBalance,
+		Bonus:                 r.Bonus,
+		RawJSON:               rawJSON(r),
+		UpdatedAt:             snapshotTime,
 	}
 }
 
@@ -952,6 +1220,7 @@ type rawPosition struct {
 	Symbol         string `json:"symbol"`
 	PositionID     string `json:"positionId"`
 	PositionType   string `json:"positionType"`
+	PositionModel  string `json:"positionModel"`
 	PositionSide   string `json:"positionSide"`
 	PositionSize   string `json:"positionSize"`
 	CloseOrderSize string `json:"closeOrderSize"`
@@ -982,25 +1251,73 @@ func (r rawPosition) toPosition(snapshotTime time.Time, markPrice string) exchan
 		unrealized = formatDecimal(pnl)
 	}
 	return exchangemodel.Position{
+		Symbol:         FromExchangeSymbol(r.Symbol),
+		PositionID:     r.PositionID,
+		PositionSide:   strings.ToLower(strings.TrimSpace(r.PositionSide)),
+		PositionModel:  normalizePositionModel(r.PositionModel),
+		Quantity:       r.PositionSize,
+		CloseOrderSize: r.CloseOrderSize,
+		AvailableClose: r.AvailableClose,
+		EntryPrice:     r.EntryPrice,
+		MarkPrice:      markPrice,
+		Leverage:       r.Leverage,
+		MarginMode:     strings.ToLower(strings.TrimSpace(r.PositionType)),
+		IsolatedMargin: r.IsolatedMargin,
+		OrderMargin:    r.OrderMargin,
+		RealizedProfit: r.RealizedProfit,
+		AutoMargin:     r.AutoMargin,
+		ContractSize:   r.ContractSize,
+		UnrealizedPnL:  unrealized,
+		RawJSON:        rawJSON(r),
+		UpdatedAt:      snapshotTime,
+	}
+}
+
+type rawPositionConfig struct {
+	Symbol        string `json:"symbol"`
+	PositionType  string `json:"positionType"`
+	PositionSide  string `json:"positionSide"`
+	PositionModel string `json:"positionModel"`
+	AutoMargin    bool   `json:"autoMargin"`
+	Leverage      int    `json:"leverage"`
+}
+
+func (r rawPositionConfig) toPositionConfig(accountID string, snapshotTime time.Time) portfolio.PositionConfig {
+	return portfolio.PositionConfig{
+		AccountID:     strings.TrimSpace(accountID),
+		Exchange:      ExchangeName,
 		Symbol:        FromExchangeSymbol(r.Symbol),
+		PositionType:  strings.ToLower(strings.TrimSpace(r.PositionType)),
 		PositionSide:  strings.ToLower(strings.TrimSpace(r.PositionSide)),
-		Quantity:      r.PositionSize,
-		EntryPrice:    r.EntryPrice,
-		MarkPrice:     markPrice,
+		PositionModel: normalizePositionModel(r.PositionModel),
+		AutoMargin:    r.AutoMargin,
 		Leverage:      r.Leverage,
-		MarginMode:    strings.ToLower(strings.TrimSpace(r.PositionType)),
-		UnrealizedPnL: unrealized,
-		UpdatedAt:     snapshotTime,
+		RawJSON:       rawJSON(r),
+		SnapshotTime:  snapshotTime,
 	}
 }
 
 type rawOrder struct {
-	OrderID       string `json:"orderId"`
-	ClientOrderID string `json:"clientOrderId"`
-	Symbol        string `json:"symbol"`
-	State         string `json:"state"`
-	ExecutedQty   string `json:"executedQty"`
-	CreatedTime   int64  `json:"createdTime"`
+	OrderID            string `json:"orderId"`
+	PositionID         string `json:"positionId"`
+	ClientOrderID      string `json:"clientOrderId"`
+	Symbol             string `json:"symbol"`
+	OrderType          string `json:"orderType"`
+	OrderSide          string `json:"orderSide"`
+	PositionSide       string `json:"positionSide"`
+	TimeInForce        string `json:"timeInForce"`
+	Price              string `json:"price"`
+	OrigQty            string `json:"origQty"`
+	AvgPrice           string `json:"avgPrice"`
+	ExecutedQty        string `json:"executedQty"`
+	MarginFrozen       string `json:"marginFrozen"`
+	TriggerProfitPrice string `json:"triggerProfitPrice"`
+	TriggerStopPrice   string `json:"triggerStopPrice"`
+	SourceID           string `json:"sourceId"`
+	ForceClose         bool   `json:"forceClose"`
+	CloseProfit        string `json:"closeProfit"`
+	State              string `json:"state"`
+	CreatedTime        int64  `json:"createdTime"`
 }
 
 func (r rawOrder) toOrderStatus() exchangemodel.OrderStatus {
@@ -1009,10 +1326,171 @@ func (r rawOrder) toOrderStatus() exchangemodel.OrderStatus {
 		updatedAt = time.UnixMilli(r.CreatedTime).UTC()
 	}
 	return exchangemodel.OrderStatus{
-		ClientOrderID:   r.ClientOrderID,
-		ExchangeOrderID: r.OrderID,
-		Status:          r.State,
-		ExecutedQty:     r.ExecutedQty,
-		UpdatedAt:       updatedAt,
+		ClientOrderID:      r.ClientOrderID,
+		ExchangeOrderID:    r.OrderID,
+		PositionID:         r.PositionID,
+		Symbol:             FromExchangeSymbol(r.Symbol),
+		OrderType:          r.OrderType,
+		OrderSide:          r.OrderSide,
+		PositionSide:       r.PositionSide,
+		TimeInForce:        r.TimeInForce,
+		Price:              r.Price,
+		OrigQty:            r.OrigQty,
+		AvgPrice:           r.AvgPrice,
+		ExecutedQty:        r.ExecutedQty,
+		MarginFrozen:       r.MarginFrozen,
+		TriggerProfitPrice: r.TriggerProfitPrice,
+		TriggerStopPrice:   r.TriggerStopPrice,
+		SourceID:           r.SourceID,
+		ForceClose:         r.ForceClose,
+		CloseProfit:        r.CloseProfit,
+		Status:             r.State,
+		RawJSON:            rawJSON(r),
+		CreatedAt:          updatedAt,
+		UpdatedAt:          updatedAt,
 	}
+}
+
+type rawSymbolSpec struct {
+	Symbol                    string   `json:"symbol"`
+	ContractType              string   `json:"contractType"`
+	UnderlyingType            string   `json:"underlyingType"`
+	ContractSize              string   `json:"contractSize"`
+	TradeSwitch               bool     `json:"tradeSwitch"`
+	State                     int      `json:"state"`
+	InitLeverage              int      `json:"initLeverage"`
+	InitPositionType          string   `json:"initPositionType"`
+	BaseCoin                  string   `json:"baseCoin"`
+	QuoteCoin                 string   `json:"quoteCoin"`
+	BaseCoinPrecision         int      `json:"baseCoinPrecision"`
+	BaseCoinDisplayPrecision  int      `json:"baseCoinDisplayPrecision"`
+	QuoteCoinPrecision        int      `json:"quoteCoinPrecision"`
+	QuoteCoinDisplayPrecision int      `json:"quoteCoinDisplayPrecision"`
+	QuantityPrecision         int      `json:"quantityPrecision"`
+	PricePrecision            int      `json:"pricePrecision"`
+	SupportOrderType          string   `json:"supportOrderType"`
+	SupportTimeInForce        string   `json:"supportTimeInForce"`
+	SupportEntrustType        string   `json:"supportEntrustType"`
+	SupportPositionType       string   `json:"supportPositionType"`
+	MinPrice                  string   `json:"minPrice"`
+	MinQty                    string   `json:"minQty"`
+	MinNotional               string   `json:"minNotional"`
+	MaxNotional               string   `json:"maxNotional"`
+	MultiplierDown            string   `json:"multiplierDown"`
+	MultiplierUp              string   `json:"multiplierUp"`
+	MaxOpenOrders             int      `json:"maxOpenOrders"`
+	MaxEntrusts               int      `json:"maxEntrusts"`
+	MakerFee                  string   `json:"makerFee"`
+	TakerFee                  string   `json:"takerFee"`
+	LiquidationFee            string   `json:"liquidationFee"`
+	MarketTakeBound           string   `json:"marketTakeBound"`
+	DepthPrecisionMerge       int      `json:"depthPrecisionMerge"`
+	Labels                    []string `json:"labels"`
+	OnboardDate               int64    `json:"onboardDate"`
+	EnglishName               string   `json:"enName"`
+	ChineseName               string   `json:"cnName"`
+	MinStepPrice              string   `json:"minStepPrice"`
+	BaseCoinName              string   `json:"baseCoinName"`
+	QuoteCoinName             string   `json:"quoteCoinName"`
+}
+
+func (r rawSymbolSpec) toContractSpec() portfolio.ContractSpec {
+	labels, _ := json.Marshal(r.Labels)
+	return portfolio.ContractSpec{
+		Exchange:                  ExchangeName,
+		Symbol:                    FromExchangeSymbol(r.Symbol),
+		ContractType:              r.ContractType,
+		UnderlyingType:            r.UnderlyingType,
+		ContractSize:              r.ContractSize,
+		TradeSwitch:               r.TradeSwitch,
+		State:                     r.State,
+		InitLeverage:              r.InitLeverage,
+		InitPositionType:          r.InitPositionType,
+		BaseAsset:                 r.BaseCoin,
+		QuoteAsset:                r.QuoteCoin,
+		BaseCoinPrecision:         r.BaseCoinPrecision,
+		BaseCoinDisplayPrecision:  r.BaseCoinDisplayPrecision,
+		QuoteCoinPrecision:        r.QuoteCoinPrecision,
+		QuoteCoinDisplayPrecision: r.QuoteCoinDisplayPrecision,
+		QuantityPrecision:         r.QuantityPrecision,
+		PricePrecision:            r.PricePrecision,
+		SupportOrderType:          r.SupportOrderType,
+		SupportTimeInForce:        r.SupportTimeInForce,
+		SupportEntrustType:        r.SupportEntrustType,
+		SupportPositionType:       r.SupportPositionType,
+		MinPrice:                  r.MinPrice,
+		MinQty:                    r.MinQty,
+		MinNotional:               r.MinNotional,
+		MaxNotional:               r.MaxNotional,
+		MultiplierDown:            r.MultiplierDown,
+		MultiplierUp:              r.MultiplierUp,
+		MaxOpenOrders:             r.MaxOpenOrders,
+		MaxEntrusts:               r.MaxEntrusts,
+		MakerFee:                  r.MakerFee,
+		TakerFee:                  r.TakerFee,
+		LiquidationFee:            r.LiquidationFee,
+		MarketTakeBound:           r.MarketTakeBound,
+		DepthPrecisionMerge:       r.DepthPrecisionMerge,
+		LabelsJSON:                string(labels),
+		OnboardTime:               time.UnixMilli(r.OnboardDate).UTC(),
+		EnglishName:               r.EnglishName,
+		ChineseName:               r.ChineseName,
+		MinStepPrice:              r.MinStepPrice,
+		BaseCoinName:              r.BaseCoinName,
+		QuoteCoinName:             r.QuoteCoinName,
+		TickSize:                  r.MinStepPrice,
+		StepSize:                  r.MinQty,
+		RawJSON:                   rawJSON(r),
+	}
+}
+
+type rawSymbolBracket struct {
+	Symbol           string               `json:"symbol"`
+	LeverageBrackets []rawLeverageBracket `json:"leverageBrackets"`
+}
+
+func (r rawSymbolBracket) toLeverageBrackets() []portfolio.LeverageBracket {
+	symbol := FromExchangeSymbol(r.Symbol)
+	brackets := make([]portfolio.LeverageBracket, 0, len(r.LeverageBrackets))
+	for _, item := range r.LeverageBrackets {
+		brackets = append(brackets, item.toLeverageBracket(symbol))
+	}
+	return brackets
+}
+
+type rawLeverageBracket struct {
+	Symbol             string `json:"symbol"`
+	Bracket            int    `json:"bracket"`
+	MaxNominalValue    string `json:"maxNominalValue"`
+	MaintMarginRate    string `json:"maintMarginRate"`
+	StartMarginRate    string `json:"startMarginRate"`
+	MaxStartMarginRate string `json:"maxStartMarginRate"`
+	MaxLeverage        string `json:"maxLeverage"`
+	MinLeverage        string `json:"minLeverage"`
+}
+
+func (r rawLeverageBracket) toLeverageBracket(symbol string) portfolio.LeverageBracket {
+	if r.Symbol != "" {
+		symbol = FromExchangeSymbol(r.Symbol)
+	}
+	return portfolio.LeverageBracket{
+		Exchange:           ExchangeName,
+		Symbol:             symbol,
+		Bracket:            r.Bracket,
+		MaxNominalValue:    r.MaxNominalValue,
+		MaintMarginRate:    r.MaintMarginRate,
+		StartMarginRate:    r.StartMarginRate,
+		MaxStartMarginRate: r.MaxStartMarginRate,
+		MaxLeverage:        r.MaxLeverage,
+		MinLeverage:        r.MinLeverage,
+		RawJSON:            rawJSON(r),
+	}
+}
+
+func rawJSON(value any) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
 }

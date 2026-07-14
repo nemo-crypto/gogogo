@@ -9,6 +9,7 @@
 > v5 实装：默认信号周期从 `1m` 降为 `5m`，`aggressive` 档为 `3m`；止盈止损改为 ATR 动态区间，避免固定小区间被手续费和噪音吞掉。
 > v6 实装：OneBullEx live 提交路径会把本地计算的止盈价和止损价作为交易所原生保护字段提交；实盘开关仍默认关闭。
 > v7 实装：增加第一阶段信号质量过滤器，按特征给候选开仓打分，低分信号先观望并把特征写入 `signals.raw_features_json`。
+> v8 第一阶段实装：新增 `15m/1h` 高周期趋势过滤、日亏损/连续亏损硬熔断接线、保本止损、ATR trailing stop、`paper_positions.close_reason` 平仓原因入库；完整增强路线见 `docs/perpetual-trend-risk-enhancement-plan.md`。
 
 ## 1. 当前实际参数
 
@@ -24,6 +25,8 @@
 | 固定止损兜底 | `0.45%` | `-dynamic-tpsl=false` 时使用 |
 | 动态止盈 | `ATR * 1.6`，区间 `0.55%~1.40%` | `aggressive` 档为 `ATR * 1.8`，区间 `0.60%~1.60%` |
 | 动态止损 | `ATR * 1.0`，区间 `0.30%~0.75%` | 开仓时固定本笔持仓的止损距离 |
+| 保本止损 | 默认开启，`breakeven_trigger_r=1.0` | 浮盈达到 1R 后，把止损移动到手续费调整后的保本价 |
+| ATR 追踪止损 | 默认开启，`trailing_activation_r=1.5` / `trailing_atr_mult=1.2` | 浮盈达到 1.5R 后，只向盈利方向移动止损 |
 | 冷却 | `1` 根 K 线 | 平仓后至少等 1 根 K 线 |
 | 手续费 | `0.0005` | 回测/模拟成本参数 |
 | 滑点 | `0.0005` | 回测/模拟成本参数 |
@@ -34,6 +37,9 @@
 | 可用余额占用 | `max_balance_use_pct` | 限制单笔订单最多吃掉多少可用余额 |
 | 强平距离 | `min_liquidation_distance_pct` | 预估强平价太近时拒绝开仓 |
 | 趋势强度过滤 | `min_trend_spread_pct=0.03` | 过滤快慢均线距离太小的噪音信号 |
+| 高周期趋势过滤 | 默认开启，`15m + 1h` | `15m EMA20/60` 和 `1h EMA20/60` 同向才允许新开仓 |
+| 日亏损熔断 | `max_daily_loss_pct=2` | 当天已实现亏损达到阈值后拒绝新开仓 |
+| 连续亏损熔断 | `max_consecutive_losses=3` | 连续亏损达到阈值后拒绝新开仓 |
 | 确认 K 线 | `confirm_bars=1` | 要求连续 N 根 K 线同方向确认 |
 | ATR 过滤 | `atr_window=14` / `min_atr_pct=0.08` / `max_atr_pct=1.6` | 波动太小不做，波动太大也不追 |
 | 成交量过滤 | `volume_window=20` / `min_volume_ratio=1.10` | 当前成交量需要高于均量倍数 |
@@ -83,7 +89,6 @@
 
 - 没有减仓。
 - 没有分批止盈。
-- 没有移动止损。
 - 没有追踪止盈。
 - 没有加仓。
 - 没有反手开仓。例如多单止损后，不会在同一轮马上反手开空。
@@ -343,7 +348,7 @@
 
 ```bash
 go run ./cmd/papertrade \
-  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -dsn data.db \
   -account paper \
   -profile aggressive \
   -symbol BTCUSDT \
@@ -398,7 +403,8 @@ go run ./cmd/papertrade \
 - 默认周期改为 `5m`，降低噪音交易。
 - 止盈止损改为 ATR 动态区间，止盈默认 `0.55%~1.40%`，止损默认 `0.30%~0.75%`。
 - 回测和 paper 都使用开仓时的 ATR 计算本笔持仓 TP/SL。
-- 下一步再做分批止盈 + 保本止损。
+- paper 已支持保本止损和 ATR trailing stop。
+- 下一步再做分批止盈。
 
 ### 12.2 已处理一部分：1m SMA 3/9 太容易被噪音触发
 
@@ -413,7 +419,7 @@ go run ./cmd/papertrade \
 
 - 默认信号周期改为 `5m`，`aggressive` 改为 `3m`。
 - 已有趋势强度过滤、成交量过滤、ATR 过滤、追价距离过滤和回踩确认。
-- 还没做多周期趋势过滤，后续建议用 `15m` 趋势过滤 `3m/5m` 入场方向。
+- 已支持 `15m + 1h` 高周期趋势过滤，默认只顺高周期方向开仓。
 
 ### 12.3 实时 paper 和回测退出逻辑已经基本对齐
 
@@ -610,7 +616,7 @@ ATR 动态 TP/SL 已完成，下一步重点是把盈利单保护住，避免“
 
 ```bash
 go run ./cmd/marketsync \
-  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -dsn data.db \
   -dataset klines \
   -exchange onebullex \
   -market perpetual \
@@ -625,7 +631,7 @@ go run ./cmd/marketsync \
 
 ```bash
 go run ./cmd/backtest \
-  -dsn /Users/guilinzhou/Desktop/test-nemo/gogogo/data.db \
+  -dsn data.db \
   -exchange onebullex \
   -market perpetual \
   -symbol BTCUSDT \
@@ -703,15 +709,16 @@ Go 里可优先采用的库：
 4. 已完成：增加 `risk_pct`、`max_notional_pct`、`max_margin_pct`、`max_balance_use_pct`，支持按风险比例和保证金约束计算 paper 仓位。
 5. 已完成：订单风控记录订单风险、保证金、可用余额和强平距离相关上下文。
 6. 已完成：增加 `aggressive` 小资金参数档、追价距离过滤和回踩确认。
-7. 增加 trade log，记录每次开仓、平仓、原因、持仓时长、净盈亏。
+7. 已完成第一阶段：`paper_positions.close_reason` 记录平仓原因；后续可继续扩展独立 trade log。
 8. 已完成：改固定 TP/SL 为 ATR 动态 TP/SL。
 9. 已完成：live 提交路径随开仓单提交 OneBullEx 原生止盈止损保护字段。
-10. 增加分批止盈和保本止损。
-11. 增加连续亏损暂停和日亏损暂停。
+10. 已完成：保本止损和 ATR trailing stop。
+11. 已完成：连续亏损暂停和日亏损暂停接入 paper 风控快照。
 12. 做参数网格回测、out-of-sample 和 walk-forward 验证。
 13. 已完成第一阶段：启发式信号质量过滤器入库特征，用于后续训练 ML 过滤器。
-14. 后续建立模型版本表，用 ML 评分替换启发式评分，不直接自动替换策略。
-15. 连续 paper trading 至少 2 到 4 周，再考虑小资金真实灰度。
+14. 增加分批止盈。
+15. 后续建立模型版本表，用 ML 评分替换启发式评分，不直接自动替换策略。
+16. 连续 paper trading 至少 2 到 4 周，再考虑小资金真实灰度。
 
 ## 18. 下一版建议目标
 
@@ -727,8 +734,9 @@ scalp-tpsl-v2
 - 开仓增加均线差、成交量、波动率、追价距离和回踩确认过滤；
 - 平仓统一支持止盈、止损、趋势反转；
 - PnL 计入手续费和滑点；
-- 支持部分止盈和保本止损；
-- 增加 `15m` 趋势过滤；
+- 支持保本止损和 ATR trailing stop；
+- 增加部分止盈；
+- 保留 `15m + 1h` 趋势过滤；
 - 接入交易所只读账户 API，用真实 available balance、position risk、leverage bracket 覆盖 paper 估算；
 - 看板展示每笔交易的净盈亏和退出原因。
 

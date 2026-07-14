@@ -14,7 +14,7 @@ import (
 
 func main() {
 	var (
-		dsn      = flag.String("dsn", env("DATABASE_DSN", "/Users/guilinzhou/Desktop/test-nemo/gogogo/data.db"), "sqlite database path")
+		dsn      = flag.String("dsn", env("DATABASE_DSN", "data.db"), "sqlite database path")
 		market   = flag.String("market", "", "optional market filter: perpetual")
 		symbol   = flag.String("symbol", "", "optional symbol filter")
 		interval = flag.String("interval", "1h", "optional interval filter")

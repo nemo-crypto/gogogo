@@ -98,6 +98,64 @@ func TestPaperTrendExitReason(t *testing.T) {
 	}
 }
 
+func TestPaperProtectiveStopLossMovesLongStopToBreakevenAndTrail(t *testing.T) {
+	start := time.Date(2026, 7, 14, 0, 0, 0, 0, time.UTC)
+	candles := testFeatureCandles(start,
+		[]float64{100, 100.5, 101, 101.5, 102},
+		[]float64{100, 100, 100, 100, 100},
+	)
+	position := portfolio.PaperPositionRecord{
+		PositionSide:    "long",
+		EntryPrice:      100,
+		MarkPrice:       100,
+		StopLossPrice:   99,
+		InitialStopLoss: 99,
+		TakeProfitPrice: 104,
+	}
+	stop, reason, ok := paperProtectiveStopLoss(position, paperSettleRequest{
+		MarkPrice:       101.1,
+		Candles:         candles,
+		ATRWindow:       3,
+		BreakevenStop:   true,
+		BreakevenR:      1,
+		TrailingStop:    true,
+		TrailingR:       1.5,
+		TrailingATRMult: 1.2,
+		PriceTickSize:   0.1,
+	})
+	if !ok {
+		t.Fatal("protective stop not adjusted")
+	}
+	if reason != "breakeven_stop" {
+		t.Fatalf("reason = %q, want breakeven_stop", reason)
+	}
+	if !closeEnough(stop, 100) {
+		t.Fatalf("stop = %f, want 100", stop)
+	}
+
+	position.StopLossPrice = 100
+	stop, reason, ok = paperProtectiveStopLoss(position, paperSettleRequest{
+		MarkPrice:       102,
+		Candles:         candles,
+		ATRWindow:       3,
+		BreakevenStop:   true,
+		BreakevenR:      1,
+		TrailingStop:    true,
+		TrailingR:       1.5,
+		TrailingATRMult: 0.5,
+		PriceTickSize:   0.1,
+	})
+	if !ok {
+		t.Fatal("trailing stop not adjusted")
+	}
+	if reason != "atr_trailing_stop" {
+		t.Fatalf("reason = %q, want atr_trailing_stop", reason)
+	}
+	if stop <= 100 || stop >= 102 {
+		t.Fatalf("trailing stop = %f, want between 100 and 102", stop)
+	}
+}
+
 func TestPaperPositionNetPnLIncludesRoundTripCosts(t *testing.T) {
 	position := portfolio.PaperPositionRecord{
 		PositionSide: "long",
@@ -205,6 +263,8 @@ func TestPaperRiskAccountSnapshotUsesCurrentState(t *testing.T) {
 	}, paperAccountState{
 		Equity:                9900,
 		AvailableBalance:      8500,
+		DailyRealizedPnL:      -120,
+		ConsecutiveLosses:     2,
 		CurrentExposure:       2500,
 		CurrentSymbolExposure: 2500,
 		CurrentInitialMargin:  1250,
@@ -218,6 +278,58 @@ func TestPaperRiskAccountSnapshotUsesCurrentState(t *testing.T) {
 	}
 	if snapshot.CurrentInitialMargin != 1250 {
 		t.Fatalf("initial margin = %f, want 1250", snapshot.CurrentInitialMargin)
+	}
+	if snapshot.DailyRealizedPnL != -120 {
+		t.Fatalf("daily realized pnl = %f, want -120", snapshot.DailyRealizedPnL)
+	}
+	if snapshot.ConsecutiveLosses != 2 {
+		t.Fatalf("consecutive losses = %d, want 2", snapshot.ConsecutiveLosses)
+	}
+}
+
+func TestComputePaperTrendRegimeAllowsOnlyAlignedLong(t *testing.T) {
+	start := time.Date(2026, 7, 14, 0, 0, 0, 0, time.UTC)
+	trendCandles := testTrendCandles(start, "15m", []float64{100, 101, 102, 103, 104, 105, 106, 107, 108, 109})
+	macroCandles := testTrendCandles(start, "1h", []float64{90, 91, 92, 93, 94, 95, 96, 97, 98, 99})
+	regime, err := computePaperTrendRegime(trendCandles, macroCandles, paperRunConfig{
+		TrendFilterEnabled: true,
+		TrendInterval:      "15m",
+		MacroTrendInterval: "1h",
+		TrendFastWindow:    3,
+		TrendSlowWindow:    6,
+		TrendMinSpreadPct:  0.01,
+	})
+	if err != nil {
+		t.Fatalf("compute trend regime: %v", err)
+	}
+	if !regime.AllowLong || regime.AllowShort {
+		t.Fatalf("allow long/short = %v/%v, want true/false; regime=%+v", regime.AllowLong, regime.AllowShort, regime)
+	}
+	if !trendRegimeAllowsAction(regime, strategy.SignalBuy) {
+		t.Fatalf("buy blocked by regime: %+v", regime)
+	}
+	if trendRegimeAllowsAction(regime, strategy.SignalShort) {
+		t.Fatalf("short allowed by long regime: %+v", regime)
+	}
+}
+
+func TestComputePaperTrendRegimeBlocksWhenTrendDataMissing(t *testing.T) {
+	start := time.Date(2026, 7, 14, 0, 0, 0, 0, time.UTC)
+	candles := testTrendCandles(start, "15m", []float64{100, 101, 102})
+	regime, err := computePaperTrendRegime(candles, candles, paperRunConfig{
+		TrendFilterEnabled: true,
+		TrendFastWindow:    3,
+		TrendSlowWindow:    6,
+		TrendMinSpreadPct:  0.01,
+	})
+	if err != nil {
+		t.Fatalf("compute trend regime: %v", err)
+	}
+	if regime.AllowLong || regime.AllowShort {
+		t.Fatalf("entries allowed with missing data: %+v", regime)
+	}
+	if regime.Reason != "trend_data_unavailable" {
+		t.Fatalf("reason = %q, want trend_data_unavailable", regime.Reason)
 	}
 }
 
@@ -529,6 +641,23 @@ func testFeatureCandles(start time.Time, closes []float64, volumes []float64) []
 			Low:        formatTestFloat(closePrice - 0.5),
 			Close:      formatTestFloat(closePrice),
 			Volume:     formatTestFloat(volumes[i]),
+		})
+	}
+	return candles
+}
+
+func testTrendCandles(start time.Time, interval string, closes []float64) []marketdata.Candle {
+	candles := make([]marketdata.Candle, 0, len(closes))
+	for i, closePrice := range closes {
+		openTime := start.Add(time.Duration(i) * time.Minute)
+		candles = append(candles, marketdata.Candle{
+			Exchange:   "onebullex",
+			MarketType: marketdata.MarketTypePerpetual,
+			Symbol:     "BTCUSDT",
+			Interval:   interval,
+			OpenTime:   openTime,
+			CloseTime:  openTime.Add(time.Minute),
+			Close:      formatTestFloat(closePrice),
 		})
 	}
 	return candles

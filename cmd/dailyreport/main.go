@@ -21,7 +21,7 @@ func main() {
 
 func run() error {
 	var (
-		dsn   = flag.String("dsn", env("DATABASE_DSN", "/Users/guilinzhou/Desktop/test-nemo/gogogo/data.db"), "sqlite database path")
+		dsn   = flag.String("dsn", env("DATABASE_DSN", "data.db"), "sqlite database path")
 		since = flag.String("since", time.Now().UTC().Add(-24*time.Hour).Format(time.RFC3339), "report start time")
 	)
 	flag.Parse()
