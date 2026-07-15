@@ -12,6 +12,7 @@ import (
 	"gogogo/internal/portfolio"
 	"gogogo/internal/risk"
 	"gogogo/internal/strategy"
+	"log"
 	"math"
 	"strings"
 	"time"
@@ -79,6 +80,7 @@ type paperSettleRequest struct {
 	SlippageRate    float64
 	Candles         []marketdata.Candle
 	AllowPaperState bool
+	SaveSnapshots   bool
 }
 
 type paperAccountState struct {
@@ -142,20 +144,22 @@ func settlePaperPosition(ctx context.Context, repo *portfolio.SQLiteRepository, 
 	position, err := repo.LatestOpenPaperPosition(ctx, request.AccountID, request.StrategyID, request.Exchange, request.MarketType, request.Symbol)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			if err := savePaperAccountSnapshots(ctx, repo, paperSnapshotRequest{
-				AccountID:      request.AccountID,
-				Exchange:       request.Exchange,
-				MarketType:     request.MarketType,
-				Symbol:         request.Symbol,
-				Equity:         state.Equity,
-				Leverage:       request.Leverage,
-				MaintMarginPct: request.MaintMarginPct,
-				MarkPrice:      request.MarkPrice,
-				SnapshotTime:   request.MarkTime,
-				FeeRate:        request.FeeRate,
-				SlippageRate:   request.SlippageRate,
-			}); err != nil {
-				return paperAccountState{}, err
+			if request.SaveSnapshots {
+				if err := savePaperAccountSnapshots(ctx, repo, paperSnapshotRequest{
+					AccountID:      request.AccountID,
+					Exchange:       request.Exchange,
+					MarketType:     request.MarketType,
+					Symbol:         request.Symbol,
+					Equity:         state.Equity,
+					Leverage:       request.Leverage,
+					MaintMarginPct: request.MaintMarginPct,
+					MarkPrice:      request.MarkPrice,
+					SnapshotTime:   request.MarkTime,
+					FeeRate:        request.FeeRate,
+					SlippageRate:   request.SlippageRate,
+				}); err != nil {
+					return paperAccountState{}, err
+				}
 			}
 			return state, nil
 		}
@@ -206,7 +210,7 @@ func settlePaperPosition(ctx context.Context, repo *portfolio.SQLiteRepository, 
 		}); err != nil {
 			return paperAccountState{}, err
 		}
-		fmt.Printf("paper_position_closed id=%d reason=%s exit=%.8f realized_pnl=%.8f\n", closed.ID, exitReason, request.MarkPrice, closed.RealizedPnL)
+		log.Printf("paper_position_closed id=%d reason=%s exit=%.8f realized_pnl=%.8f", closed.ID, exitReason, request.MarkPrice, closed.RealizedPnL)
 		return state, nil
 	}
 
@@ -215,7 +219,7 @@ func settlePaperPosition(ctx context.Context, repo *portfolio.SQLiteRepository, 
 			return paperAccountState{}, fmt.Errorf("update protective stop loss: %w", err)
 		}
 		position.StopLossPrice = adjustedStop
-		fmt.Printf("paper_position_stop_adjusted id=%d reason=%s stop=%.8f mark=%.8f\n", position.ID, reason, adjustedStop, request.MarkPrice)
+		log.Printf("paper_position_stop_adjusted id=%d reason=%s stop=%.8f mark=%.8f", position.ID, reason, adjustedStop, request.MarkPrice)
 	}
 
 	if err := repo.UpdatePaperPositionMark(ctx, position.ID, request.MarkPrice); err != nil {
@@ -232,21 +236,23 @@ func settlePaperPosition(ctx context.Context, repo *portfolio.SQLiteRepository, 
 	state.CurrentInitialMargin = paperInitialMargin(state.CurrentExposure, request.Leverage)
 	state.CurrentMaintMargin = paperMaintenanceMargin(state.CurrentExposure, request.MaintMarginPct)
 	state.AvailableBalance = paperAvailableBalance(state.Equity, state.CurrentInitialMargin)
-	if err := savePaperAccountSnapshots(ctx, repo, paperSnapshotRequest{
-		AccountID:      request.AccountID,
-		Exchange:       request.Exchange,
-		MarketType:     request.MarketType,
-		Symbol:         request.Symbol,
-		Equity:         state.Equity,
-		Leverage:       request.Leverage,
-		MaintMarginPct: request.MaintMarginPct,
-		Position:       position,
-		MarkPrice:      request.MarkPrice,
-		SnapshotTime:   request.MarkTime,
-		FeeRate:        request.FeeRate,
-		SlippageRate:   request.SlippageRate,
-	}); err != nil {
-		return paperAccountState{}, err
+	if request.SaveSnapshots {
+		if err := savePaperAccountSnapshots(ctx, repo, paperSnapshotRequest{
+			AccountID:      request.AccountID,
+			Exchange:       request.Exchange,
+			MarketType:     request.MarketType,
+			Symbol:         request.Symbol,
+			Equity:         state.Equity,
+			Leverage:       request.Leverage,
+			MaintMarginPct: request.MaintMarginPct,
+			Position:       position,
+			MarkPrice:      request.MarkPrice,
+			SnapshotTime:   request.MarkTime,
+			FeeRate:        request.FeeRate,
+			SlippageRate:   request.SlippageRate,
+		}); err != nil {
+			return paperAccountState{}, err
+		}
 	}
 	return state, nil
 }

@@ -14,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,15 +22,28 @@ import (
 var content embed.FS
 
 type Server struct {
-	db       *sql.DB
-	haltFile string
+	db        *sql.DB
+	haltFile  string
+	cacheTTL  time.Duration
+	cacheMu   sync.Mutex
+	dashCache map[string]dashboardCacheEntry
 }
 
 func NewServer(db *sql.DB, haltFile string) *Server {
 	if haltFile == "" {
 		haltFile = ".runtime/halt"
 	}
-	return &Server{db: db, haltFile: haltFile}
+	return &Server{
+		db:        db,
+		haltFile:  haltFile,
+		cacheTTL:  dashboardCacheTTL(),
+		dashCache: make(map[string]dashboardCacheEntry),
+	}
+}
+
+type dashboardCacheEntry struct {
+	expiresAt time.Time
+	data      Data
 }
 
 func (s *Server) Routes() http.Handler {
@@ -79,11 +93,16 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		Limit:      parseLimit(r.URL.Query().Get("limit"), 240, 1000),
 	}
 
+	if data, ok := s.cachedDashboard(query); ok {
+		writeJSON(w, http.StatusOK, data)
+		return
+	}
 	data, err := s.collect(r.Context(), query)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	s.storeDashboardCache(query, data)
 	writeJSON(w, http.StatusOK, data)
 }
 
@@ -111,6 +130,38 @@ type dashboardQuery struct {
 	Symbol     string `json:"symbol"`
 	Interval   string `json:"interval"`
 	Limit      int    `json:"limit"`
+}
+
+func (q dashboardQuery) cacheKey() string {
+	return fmt.Sprintf("%s|%s|%s|%s|%d", q.Exchange, q.MarketType, q.Symbol, q.Interval, q.Limit)
+}
+
+func (s *Server) cachedDashboard(query dashboardQuery) (Data, bool) {
+	if s.cacheTTL <= 0 {
+		return Data{}, false
+	}
+	now := time.Now().UTC()
+	key := query.cacheKey()
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	entry, ok := s.dashCache[key]
+	if !ok || now.After(entry.expiresAt) {
+		delete(s.dashCache, key)
+		return Data{}, false
+	}
+	return entry.data, true
+}
+
+func (s *Server) storeDashboardCache(query dashboardQuery, data Data) {
+	if s.cacheTTL <= 0 {
+		return
+	}
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	s.dashCache[query.cacheKey()] = dashboardCacheEntry{
+		expiresAt: time.Now().UTC().Add(s.cacheTTL),
+		data:      data,
+	}
 }
 
 type Data struct {
@@ -481,18 +532,29 @@ ORDER BY market_type ASC, symbol ASC, interval ASC;
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
 	records := make([]MarketCoverage, 0)
 	for rows.Next() {
 		var record MarketCoverage
 		if err := rows.Scan(&record.Exchange, &record.MarketType, &record.Symbol, &record.Interval, &record.Candles, &record.FirstTime, &record.LastTime); err != nil {
+			_ = rows.Close()
 			return nil, err
 		}
-		record.LastClose = s.latestClose(ctx, record.Exchange, record.MarketType, record.Symbol, record.Interval)
 		records = append(records, record)
 	}
-	return records, rows.Err()
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+
+	for i := range records {
+		record := &records[i]
+		record.LastClose = s.latestClose(ctx, record.Exchange, record.MarketType, record.Symbol, record.Interval)
+	}
+	return records, nil
 }
 
 func (s *Server) latestClose(ctx context.Context, exchange string, marketType string, symbol string, interval string) float64 {
@@ -1137,6 +1199,18 @@ func isMissingTable(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "no such table")
 }
 
+func dashboardCacheTTL() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("DASHBOARD_CACHE_TTL"))
+	if raw == "" {
+		return 2 * time.Second
+	}
+	ttl, err := time.ParseDuration(raw)
+	if err != nil || ttl < 0 {
+		return 2 * time.Second
+	}
+	return ttl
+}
+
 func writeJSON(w http.ResponseWriter, statusCode int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
@@ -1146,12 +1220,41 @@ func writeJSON(w http.ResponseWriter, statusCode int, value any) {
 	}
 }
 
+type responseRecorder struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (r *responseRecorder) WriteHeader(status int) {
+	if r.status != 0 {
+		return
+	}
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *responseRecorder) Write(data []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	n, err := r.ResponseWriter.Write(data)
+	r.bytes += n
+	return n, err
+}
+
 func logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/health" && !strings.HasPrefix(r.URL.Path, "/static/") {
-			log.Printf("%s %s", r.Method, r.URL.Path)
+		quiet := r.URL.Path == "/health" || strings.HasPrefix(r.URL.Path, "/static/")
+		start := time.Now()
+		recorder := &responseRecorder{ResponseWriter: w}
+		next.ServeHTTP(recorder, r)
+		if recorder.status == 0 {
+			recorder.status = http.StatusOK
 		}
-		next.ServeHTTP(w, r)
+		if !quiet {
+			log.Printf("%s %s status=%d duration=%s bytes=%d", r.Method, r.URL.Path, recorder.status, time.Since(start).Round(time.Millisecond), recorder.bytes)
+		}
 	})
 }
 

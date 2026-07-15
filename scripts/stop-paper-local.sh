@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="${ROOT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 PID_DIR="$ROOT_DIR/.runtime/pids"
+READY_FILE="$ROOT_DIR/.runtime/paper-local-stack.ready"
 
 if [ ! -d "$PID_DIR" ]; then
   echo "no pid directory: $PID_DIR"
@@ -50,4 +51,5 @@ for pid_file in "$PID_DIR"/*.pid; do
   stop_service "$pid_file"
 done
 
+rm -f "$READY_FILE"
 echo "local paper stack stopped."

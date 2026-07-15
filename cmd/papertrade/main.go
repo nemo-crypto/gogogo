@@ -143,6 +143,8 @@ func run() error {
 		submitExchange = flag.Bool("submit-exchange", false, "submit allowed open/close orders to OneBullEx; also requires ONEBULLEX_LIVE_TRADING=true")
 		watch          = flag.Bool("watch", false, "keep running paper strategy on latest local market data")
 		pollEvery      = flag.Duration("poll-interval", 15*time.Second, "poll interval when -watch is enabled")
+		persistEvery   = flag.Duration("persist-interval", time.Minute, "minimum interval for persisting hold signals/account snapshots in watch mode; new candles and orders always persist")
+		backtestEvery  = flag.Duration("backtest-interval", 5*time.Minute, "minimum interval for saving backtest_runs in watch mode; 0 saves every tick")
 	)
 	flag.Parse()
 	setFlags := visitedFlagNames()
@@ -286,6 +288,8 @@ func run() error {
 		SubmitExchange:       *submitExchange,
 		Watch:                *watch,
 		PollInterval:         *pollEvery,
+		PersistInterval:      *persistEvery,
+		BacktestInterval:     *backtestEvery,
 		LookbackCandles:      120,
 	}
 	if config.Exchange != onebullex.ExchangeName {

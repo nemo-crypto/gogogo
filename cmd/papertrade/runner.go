@@ -15,18 +15,108 @@ import (
 	"time"
 )
 
+type paperRunOptions struct {
+	SaveBacktest           bool
+	SaveObservation        bool
+	SaveAccountSnapshot    bool
+	LastObservedCandleTime time.Time
+}
+
+type paperRunSummary struct {
+	Action           strategy.SignalAction
+	LatestCandleTime time.Time
+	RunID            int64
+	BacktestRunID    int64
+	ObservationSaved bool
+	BacktestSaved    bool
+	AccountSaved     bool
+	OpenedOrder      bool
+	ClosedOrder      bool
+	TotalReturnPct   float64
+	ExcessReturnPct  float64
+	MaxDrawdownPct   float64
+	TradeCount       int
+}
+
+type paperWatchState struct {
+	lastObservationAt time.Time
+	lastBacktestAt    time.Time
+	lastCandleTime    time.Time
+}
+
+func (s paperWatchState) nextOptions(now time.Time, config paperRunConfig) paperRunOptions {
+	return paperRunOptions{
+		SaveBacktest:           shouldPersistByInterval(now, s.lastBacktestAt, config.BacktestInterval),
+		SaveObservation:        shouldPersistByInterval(now, s.lastObservationAt, config.PersistInterval),
+		SaveAccountSnapshot:    shouldPersistByInterval(now, s.lastObservationAt, config.PersistInterval),
+		LastObservedCandleTime: s.lastCandleTime,
+	}
+}
+
+func (s *paperWatchState) observe(now time.Time, summary paperRunSummary) {
+	if summary.ObservationSaved {
+		s.lastObservationAt = now
+		if !summary.LatestCandleTime.IsZero() {
+			s.lastCandleTime = summary.LatestCandleTime
+		}
+	}
+	if summary.BacktestSaved {
+		s.lastBacktestAt = now
+	}
+}
+
+func shouldPersistByInterval(now time.Time, last time.Time, interval time.Duration) bool {
+	if interval <= 0 {
+		return true
+	}
+	if last.IsZero() {
+		return true
+	}
+	return !now.Before(last.Add(interval))
+}
+
+func latestPaperCandleTime(candles []marketdata.Candle) time.Time {
+	if len(candles) == 0 {
+		return time.Time{}
+	}
+	return candles[len(candles)-1].OpenTime.UTC()
+}
+
+func shouldSavePaperObservation(options paperRunOptions, latestCandleTime time.Time, action strategy.SignalAction, closeNote string) bool {
+	if options.SaveObservation {
+		return true
+	}
+	if strings.TrimSpace(closeNote) != "" {
+		return true
+	}
+	if action != strategy.SignalHold {
+		return true
+	}
+	return !latestCandleTime.IsZero() && latestCandleTime.After(options.LastObservedCandleTime)
+}
+
 func watchPaperStrategy(ctx context.Context, db *sql.DB, config paperRunConfig) error {
 	if config.PollInterval <= 0 {
 		config.PollInterval = 15 * time.Second
 	}
-	log.Printf("papertrade watch started: strategy=%s symbol=%s interval=%s poll_interval=%s", config.StrategyID, config.Symbol, config.Interval, config.PollInterval)
+	if config.PersistInterval <= 0 {
+		config.PersistInterval = time.Minute
+	}
+	if config.BacktestInterval < 0 {
+		config.BacktestInterval = 0
+	}
+	log.Printf("papertrade watch started: strategy=%s symbol=%s interval=%s poll_interval=%s persist_interval=%s backtest_interval=%s", config.StrategyID, config.Symbol, config.Interval, config.PollInterval, config.PersistInterval, config.BacktestInterval)
+	state := paperWatchState{}
 	for {
 		current := config
 		current.End = time.Now().UTC()
 		current.Start = current.End.Add(-paperLookbackDuration(config.Interval, config.LookbackCandles))
 		runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		if err := runPaperStrategyOnce(runCtx, db, current); err != nil {
+		summary, err := runPaperStrategy(runCtx, db, current, state.nextOptions(current.End, config))
+		if err != nil {
 			log.Printf("papertrade watch error: %v", err)
+		} else {
+			state.observe(current.End, summary)
 		}
 		cancel()
 
@@ -41,6 +131,15 @@ func watchPaperStrategy(ctx context.Context, db *sql.DB, config paperRunConfig) 
 }
 
 func runPaperStrategyOnce(ctx context.Context, db *sql.DB, config paperRunConfig) error {
+	_, err := runPaperStrategy(ctx, db, config, paperRunOptions{
+		SaveBacktest:        true,
+		SaveObservation:     true,
+		SaveAccountSnapshot: true,
+	})
+	return err
+}
+
+func runPaperStrategy(ctx context.Context, db *sql.DB, config paperRunConfig, options paperRunOptions) (paperRunSummary, error) {
 	parsedMarket := marketdata.MarketType(config.MarketType)
 	mdRepo := marketdata.NewSQLiteRepository(db)
 	candles, err := mdRepo.ListCandles(ctx, marketdata.CandleQuery{
@@ -53,7 +152,7 @@ func runPaperStrategyOnce(ctx context.Context, db *sql.DB, config paperRunConfig
 		Limit:      10000,
 	})
 	if err != nil {
-		return fmt.Errorf("list candles: %w", err)
+		return paperRunSummary{}, fmt.Errorf("list candles: %w", err)
 	}
 	result, err := runPaperBacktest(candles, paperStrategyConfig{
 		StrategyType:         config.StrategyType,
@@ -84,22 +183,35 @@ func runPaperStrategyOnce(ctx context.Context, db *sql.DB, config paperRunConfig
 		PullbackTolerancePct: config.PullbackTolerancePct,
 	})
 	if err != nil {
-		return fmt.Errorf("run paper strategy: %w", err)
+		return paperRunSummary{}, fmt.Errorf("run paper strategy: %w", err)
 	}
+	latestCandleTime := latestPaperCandleTime(candles)
 
-	backtestRepo := backtest.NewSQLiteRepository(db)
-	backtestRunID, err := backtestRepo.SaveRun(ctx, backtest.SaveRunRequest{
-		Exchange:   config.Exchange,
-		MarketType: string(parsedMarket),
-		Config: backtest.SMAConfig{
-			FastWindow: config.FastWindow,
-			SlowWindow: config.SlowWindow,
-			FeeRate:    paperBacktestFeeRate(config.StrategyType, config.FeeRate, config.SlippageRate),
-		},
-		Result: result,
-	})
-	if err != nil {
-		return fmt.Errorf("save paper backtest run: %w", err)
+	summary := paperRunSummary{
+		LatestCandleTime: latestCandleTime,
+		TotalReturnPct:   result.TotalReturnPct,
+		ExcessReturnPct:  result.ExcessReturnPct,
+		MaxDrawdownPct:   result.MaxDrawdownPct,
+		TradeCount:       len(result.Trades),
+	}
+	backtestRunID := int64(0)
+	if options.SaveBacktest {
+		backtestRepo := backtest.NewSQLiteRepository(db)
+		backtestRunID, err = backtestRepo.SaveRun(ctx, backtest.SaveRunRequest{
+			Exchange:   config.Exchange,
+			MarketType: string(parsedMarket),
+			Config: backtest.SMAConfig{
+				FastWindow: config.FastWindow,
+				SlowWindow: config.SlowWindow,
+				FeeRate:    paperBacktestFeeRate(config.StrategyType, config.FeeRate, config.SlippageRate),
+			},
+			Result: result,
+		})
+		if err != nil {
+			return paperRunSummary{}, fmt.Errorf("save paper backtest run: %w", err)
+		}
+		summary.BacktestRunID = backtestRunID
+		summary.BacktestSaved = true
 	}
 
 	strategyRepo := strategy.NewSQLiteRepository(db)
@@ -167,15 +279,15 @@ func runPaperStrategyOnce(ctx context.Context, db *sql.DB, config paperRunConfig
 		"submit_exchange":          config.SubmitExchange,
 	})
 	if err != nil {
-		return fmt.Errorf("encode strategy config: %w", err)
+		return paperRunSummary{}, fmt.Errorf("encode strategy config: %w", err)
 	}
 	marketSnapshot, err := latestPaperMarketSnapshot(ctx, mdRepo, config, candles)
 	if err != nil {
-		return err
+		return paperRunSummary{}, err
 	}
 	trendRegime, err := loadPaperTrendRegime(ctx, mdRepo, config)
 	if err != nil {
-		return err
+		return paperRunSummary{}, err
 	}
 	latestPrice := marketSnapshot.Price
 	latestTime := marketSnapshot.PriceTime
@@ -208,30 +320,23 @@ func runPaperStrategyOnce(ctx context.Context, db *sql.DB, config paperRunConfig
 		StrategyType:    config.StrategyType,
 		Candles:         candles,
 		AllowPaperState: true,
+		SaveSnapshots:   options.SaveAccountSnapshot,
 	})
 	if err != nil {
-		return err
+		return paperRunSummary{}, err
 	}
 	orderRepo := execution.NewSQLiteRepository(db)
 	if paperState.CloseNote != "" && paperState.Position.ID != 0 {
 		closeOrder, err := recordPaperCloseOrder(ctx, orderRepo, config, paperState, latestPrice, latestTime)
 		if err != nil {
-			return err
+			return paperRunSummary{}, err
 		}
 		closeOrder, err = maybeSubmitOneBullExOrder(ctx, orderRepo, closeOrder, config)
 		if err != nil {
-			return err
+			return paperRunSummary{}, err
 		}
-		fmt.Printf("paper_close_order_id=%d status=%s decision=%s exchange_order_id=%s reason=%s\n", closeOrder.ID, closeOrder.Status, closeOrder.RiskDecision, closeOrder.ExchangeOrderID, paperState.CloseNote)
-	}
-
-	runID, err := strategyRepo.StartRun(ctx, strategy.RunRecord{
-		StrategyID: config.StrategyID,
-		Mode:       "paper",
-		ConfigJSON: configJSON,
-	})
-	if err != nil {
-		return fmt.Errorf("start strategy run: %w", err)
+		summary.ClosedOrder = true
+		log.Printf("paper_close_order_id=%d status=%s decision=%s exchange_order_id=%s reason=%s", closeOrder.ID, closeOrder.Status, closeOrder.RiskDecision, closeOrder.ExchangeOrderID, paperState.CloseNote)
 	}
 	signal := paperSignalAction(candles, result, paperStrategyConfig{
 		StrategyType:         config.StrategyType,
@@ -281,6 +386,9 @@ func runPaperStrategyOnce(ctx context.Context, db *sql.DB, config paperRunConfig
 	assessment.Features["macro_trend_timeframe"] = trendRegime.MacroInterval
 	assessment.Features["trend_spread_pct_htf"] = nullableFeature(trendRegime.TrendSpreadPct, trendRegime.Available)
 	assessment.Features["macro_trend_spread_pct"] = nullableFeature(trendRegime.MacroSpreadPct, trendRegime.MacroAvailable)
+	summary.Action = action
+	saveObservation := shouldSavePaperObservation(options, latestCandleTime, action, paperState.CloseNote)
+	runID := int64(0)
 	rawFeaturesJSON, err := marshalJSON(map[string]any{
 		"strategy_name":           result.StrategyName,
 		"total_return_pct":        result.TotalReturnPct,
@@ -348,106 +456,121 @@ func runPaperStrategyOnce(ctx context.Context, db *sql.DB, config paperRunConfig
 		"funding_rate_source":     marketSnapshot.FundingRateSource,
 	})
 	if err != nil {
-		return fmt.Errorf("encode signal features: %w", err)
+		return paperRunSummary{}, fmt.Errorf("encode signal features: %w", err)
 	}
-	if _, err := strategyRepo.SaveSignal(ctx, strategy.SignalRecord{
-		StrategyID:      config.StrategyID,
-		RunID:           runID,
-		Exchange:        config.Exchange,
-		MarketType:      config.MarketType,
-		Symbol:          config.Symbol,
-		Action:          action,
-		Confidence:      assessment.Score,
-		Reason:          paperSignalReason(config.StrategyType, assessment),
-		RawFeaturesJSON: rawFeaturesJSON,
-	}); err != nil {
-		return fmt.Errorf("save signal: %w", err)
-	}
-	metricsJSON, err := marshalJSON(map[string]any{
-		"total_return_pct":         result.TotalReturnPct,
-		"excess_return_pct":        result.ExcessReturnPct,
-		"trades":                   len(result.Trades),
-		"win_rate_pct":             result.WinRatePct,
-		"profile":                  config.Profile,
-		"take_profit_pct":          config.TakeProfitPct,
-		"stop_loss_pct":            config.StopLossPct,
-		"dynamic_tpsl":             config.DynamicTPSL,
-		"take_profit_atr_mult":     config.TakeProfitATRMult,
-		"stop_loss_atr_mult":       config.StopLossATRMult,
-		"min_take_profit_pct":      config.MinTakeProfitPct,
-		"max_take_profit_pct":      config.MaxTakeProfitPct,
-		"min_stop_loss_pct":        config.MinStopLossPct,
-		"max_stop_loss_pct":        config.MaxStopLossPct,
-		"breakeven_stop_enabled":   config.BreakevenStopEnabled,
-		"breakeven_trigger_r":      config.BreakevenTriggerR,
-		"trailing_stop_enabled":    config.TrailingStopEnabled,
-		"trailing_activation_r":    config.TrailingActivationR,
-		"trailing_atr_mult":        config.TrailingATRMult,
-		"min_trend_spread_pct":     config.MinTrendSpreadPct,
-		"confirm_bars":             config.ConfirmBars,
-		"atr_window":               config.ATRWindow,
-		"min_atr_pct":              config.MinATRPct,
-		"max_atr_pct":              config.MaxATRPct,
-		"volume_window":            config.VolumeWindow,
-		"min_volume_ratio":         config.MinVolumeRatio,
-		"max_entry_extension_pct":  config.MaxEntryExtensionPct,
-		"pullback_lookback":        config.PullbackLookback,
-		"pullback_tolerance_pct":   config.PullbackTolerancePct,
-		"risk_pct":                 config.RiskPct,
-		"max_notional_pct":         config.MaxNotionalPct,
-		"max_margin_pct":           config.MaxMarginPct,
-		"max_balance_use_pct":      config.MaxBalanceUsePct,
-		"min_liq_distance_pct":     config.MinLiqDistancePct,
-		"max_daily_loss_pct":       config.MaxDailyLossPct,
-		"max_consecutive_losses":   config.MaxConsecutiveLosses,
-		"daily_realized_pnl":       paperState.DailyRealizedPnL,
-		"consecutive_losses":       paperState.ConsecutiveLosses,
-		"max_abs_funding_rate_pct": config.MaxAbsFundingRatePct,
-		"signal_filter_enabled":    config.SignalFilterEnabled,
-		"min_signal_score":         config.MinSignalScore,
-		"trend_filter_enabled":     config.TrendFilterEnabled,
-		"trend_regime":             trendRegime.Regime,
-		"trend_regime_reason":      trendRegime.Reason,
-		"signal_score":             assessment.Score,
-		"signal_allowed":           assessment.AllowEntry,
-		"signal_filter_reason":     assessment.Reason,
-		"price_source":             marketSnapshot.PriceSource,
-		"price_time":               marketSnapshot.PriceTime,
-		"funding_rate_pct":         marketSnapshot.LatestFundingRatePct,
-		"funding_rate_time":        marketSnapshot.FundingRateTime,
-		"funding_rate_source":      marketSnapshot.FundingRateSource,
-	})
-	if err != nil {
-		return fmt.Errorf("encode performance metrics: %w", err)
-	}
-	if _, err := strategyRepo.SavePerformanceSnapshot(ctx, strategy.PerformanceSnapshot{
-		StrategyID:  config.StrategyID,
-		RunID:       runID,
-		Equity:      paperState.Equity,
-		PnL:         paperState.TotalPnL,
-		DrawdownPct: result.MaxDrawdownPct,
-		Exposure:    result.FinalEquity,
-		MetricsJSON: metricsJSON,
-	}); err != nil {
-		return fmt.Errorf("save performance: %w", err)
+	if saveObservation {
+		runID, err = strategyRepo.StartRun(ctx, strategy.RunRecord{
+			StrategyID: config.StrategyID,
+			Mode:       "paper",
+			Status:     strategy.RunStatusFinished,
+			FinishedAt: time.Now().UTC(),
+			ConfigJSON: configJSON,
+		})
+		if err != nil {
+			return paperRunSummary{}, fmt.Errorf("start strategy run: %w", err)
+		}
+		if _, err := strategyRepo.SaveSignal(ctx, strategy.SignalRecord{
+			StrategyID:      config.StrategyID,
+			RunID:           runID,
+			Exchange:        config.Exchange,
+			MarketType:      config.MarketType,
+			Symbol:          config.Symbol,
+			Action:          action,
+			Confidence:      assessment.Score,
+			Reason:          paperSignalReason(config.StrategyType, assessment),
+			RawFeaturesJSON: rawFeaturesJSON,
+		}); err != nil {
+			return paperRunSummary{}, fmt.Errorf("save signal: %w", err)
+		}
+		metricsJSON, err := marshalJSON(map[string]any{
+			"total_return_pct":         result.TotalReturnPct,
+			"excess_return_pct":        result.ExcessReturnPct,
+			"trades":                   len(result.Trades),
+			"win_rate_pct":             result.WinRatePct,
+			"profile":                  config.Profile,
+			"take_profit_pct":          config.TakeProfitPct,
+			"stop_loss_pct":            config.StopLossPct,
+			"dynamic_tpsl":             config.DynamicTPSL,
+			"take_profit_atr_mult":     config.TakeProfitATRMult,
+			"stop_loss_atr_mult":       config.StopLossATRMult,
+			"min_take_profit_pct":      config.MinTakeProfitPct,
+			"max_take_profit_pct":      config.MaxTakeProfitPct,
+			"min_stop_loss_pct":        config.MinStopLossPct,
+			"max_stop_loss_pct":        config.MaxStopLossPct,
+			"breakeven_stop_enabled":   config.BreakevenStopEnabled,
+			"breakeven_trigger_r":      config.BreakevenTriggerR,
+			"trailing_stop_enabled":    config.TrailingStopEnabled,
+			"trailing_activation_r":    config.TrailingActivationR,
+			"trailing_atr_mult":        config.TrailingATRMult,
+			"min_trend_spread_pct":     config.MinTrendSpreadPct,
+			"confirm_bars":             config.ConfirmBars,
+			"atr_window":               config.ATRWindow,
+			"min_atr_pct":              config.MinATRPct,
+			"max_atr_pct":              config.MaxATRPct,
+			"volume_window":            config.VolumeWindow,
+			"min_volume_ratio":         config.MinVolumeRatio,
+			"max_entry_extension_pct":  config.MaxEntryExtensionPct,
+			"pullback_lookback":        config.PullbackLookback,
+			"pullback_tolerance_pct":   config.PullbackTolerancePct,
+			"risk_pct":                 config.RiskPct,
+			"max_notional_pct":         config.MaxNotionalPct,
+			"max_margin_pct":           config.MaxMarginPct,
+			"max_balance_use_pct":      config.MaxBalanceUsePct,
+			"min_liq_distance_pct":     config.MinLiqDistancePct,
+			"max_daily_loss_pct":       config.MaxDailyLossPct,
+			"max_consecutive_losses":   config.MaxConsecutiveLosses,
+			"daily_realized_pnl":       paperState.DailyRealizedPnL,
+			"consecutive_losses":       paperState.ConsecutiveLosses,
+			"max_abs_funding_rate_pct": config.MaxAbsFundingRatePct,
+			"signal_filter_enabled":    config.SignalFilterEnabled,
+			"min_signal_score":         config.MinSignalScore,
+			"trend_filter_enabled":     config.TrendFilterEnabled,
+			"trend_regime":             trendRegime.Regime,
+			"trend_regime_reason":      trendRegime.Reason,
+			"signal_score":             assessment.Score,
+			"signal_allowed":           assessment.AllowEntry,
+			"signal_filter_reason":     assessment.Reason,
+			"price_source":             marketSnapshot.PriceSource,
+			"price_time":               marketSnapshot.PriceTime,
+			"funding_rate_pct":         marketSnapshot.LatestFundingRatePct,
+			"funding_rate_time":        marketSnapshot.FundingRateTime,
+			"funding_rate_source":      marketSnapshot.FundingRateSource,
+		})
+		if err != nil {
+			return paperRunSummary{}, fmt.Errorf("encode performance metrics: %w", err)
+		}
+		if _, err := strategyRepo.SavePerformanceSnapshot(ctx, strategy.PerformanceSnapshot{
+			StrategyID:  config.StrategyID,
+			RunID:       runID,
+			Equity:      paperState.Equity,
+			PnL:         paperState.TotalPnL,
+			DrawdownPct: result.MaxDrawdownPct,
+			Exposure:    result.FinalEquity,
+			MetricsJSON: metricsJSON,
+		}); err != nil {
+			return paperRunSummary{}, fmt.Errorf("save performance: %w", err)
+		}
+		summary.RunID = runID
+		summary.ObservationSaved = true
+		summary.AccountSaved = options.SaveAccountSnapshot
 	}
 
 	if action != strategy.SignalHold {
 		effectiveTPSL, err := paperEffectiveTPSL(candles, config)
 		if err != nil {
-			return err
+			return paperRunSummary{}, err
 		}
 		side, positionSide, stopPrice, takeProfitPrice, err := paperOrderPlan(action, latestPrice, effectiveTPSL.TakeProfitPct, effectiveTPSL.StopLossPct)
 		if err != nil {
-			return err
+			return paperRunSummary{}, err
 		}
 		orderQuantity, err := paperOrderQuantity(latestPrice, stopPrice, config, paperState)
 		if err != nil {
-			return err
+			return paperRunSummary{}, err
 		}
 		alignedPlan, err := alignPaperOrderPlan(positionSide, latestPrice, stopPrice, takeProfitPrice, orderQuantity, config)
 		if err != nil {
-			return err
+			return paperRunSummary{}, err
 		}
 		latestPrice = alignedPlan.EntryPrice
 		stopPrice = alignedPlan.StopPrice
@@ -477,15 +600,15 @@ func runPaperStrategyOnce(ctx context.Context, db *sql.DB, config paperRunConfig
 			TakeProfitPrice: takeProfitPrice,
 		})
 		if err != nil {
-			return fmt.Errorf("record paper dry-run order: %w", err)
+			return paperRunSummary{}, fmt.Errorf("record paper dry-run order: %w", err)
 		}
 		if !strings.EqualFold(string(dryRun.Order.RiskDecision), string(risk.DecisionAllow)) {
-			fmt.Printf("paper_order_id=%d status=%s decision=%s stop=%.8f take_profit=%.8f rejected_no_position=true\n", dryRun.Order.ID, dryRun.Order.Status, dryRun.Order.RiskDecision, dryRun.Order.StopPrice, dryRun.Order.TakeProfitPrice)
-			return nil
+			log.Printf("paper_order_id=%d status=%s decision=%s stop=%.8f take_profit=%.8f rejected_no_position=true", dryRun.Order.ID, dryRun.Order.Status, dryRun.Order.RiskDecision, dryRun.Order.StopPrice, dryRun.Order.TakeProfitPrice)
+			return summary, nil
 		}
 		exchangeOrder, err := maybeSubmitOneBullExOrder(ctx, orderRepo, dryRun.Order, config)
 		if err != nil {
-			return err
+			return paperRunSummary{}, err
 		}
 		opened, err := openPaperPosition(ctx, portfolioRepo, paperOpenRequest{
 			AccountID:       config.AccountID,
@@ -506,12 +629,13 @@ func runPaperStrategyOnce(ctx context.Context, db *sql.DB, config paperRunConfig
 			OpenedAt:        latestTime,
 		})
 		if err != nil {
-			return err
+			return paperRunSummary{}, err
 		}
-		fmt.Printf("paper_order_id=%d status=%s decision=%s exchange_order_id=%s tpsl_source=%s stop=%.8f take_profit=%.8f\n", exchangeOrder.ID, exchangeOrder.Status, exchangeOrder.RiskDecision, exchangeOrder.ExchangeOrderID, effectiveTPSL.Source, dryRun.Order.StopPrice, dryRun.Order.TakeProfitPrice)
-		fmt.Printf("paper_position_id=%d status=open entry=%.8f mark=%.8f pnl=%.8f\n", opened.ID, opened.EntryPrice, opened.MarkPrice, paperPositionNetPnL(opened, latestPrice, config.FeeRate, config.SlippageRate))
+		summary.OpenedOrder = true
+		log.Printf("paper_order_id=%d status=%s decision=%s exchange_order_id=%s tpsl_source=%s stop=%.8f take_profit=%.8f", exchangeOrder.ID, exchangeOrder.Status, exchangeOrder.RiskDecision, exchangeOrder.ExchangeOrderID, effectiveTPSL.Source, dryRun.Order.StopPrice, dryRun.Order.TakeProfitPrice)
+		log.Printf("paper_position_id=%d status=open entry=%.8f mark=%.8f pnl=%.8f", opened.ID, opened.EntryPrice, opened.MarkPrice, paperPositionNetPnL(opened, latestPrice, config.FeeRate, config.SlippageRate))
 	}
 
-	fmt.Printf("paper_run_id=%d backtest_run_id=%d strategy=%s symbol=%s return_pct=%.4f excess_pct=%.4f drawdown_pct=%.4f trades=%d\n", runID, backtestRunID, config.StrategyID, config.Symbol, result.TotalReturnPct, result.ExcessReturnPct, result.MaxDrawdownPct, len(result.Trades))
-	return nil
+	log.Printf("paper_tick run_id=%d backtest_run_id=%d observation_saved=%t backtest_saved=%t action=%s strategy=%s symbol=%s return_pct=%.4f excess_pct=%.4f drawdown_pct=%.4f trades=%d", runID, backtestRunID, summary.ObservationSaved, summary.BacktestSaved, action, config.StrategyID, config.Symbol, result.TotalReturnPct, result.ExcessReturnPct, result.MaxDrawdownPct, len(result.Trades))
+	return summary, nil
 }

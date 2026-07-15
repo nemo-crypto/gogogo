@@ -96,20 +96,21 @@ BACKUP_PATH=./backups
 
 ## 一键启动本地交易链路
 
+需要先安装 Go 1.22+（`go version` 可用）。完整排错与托管方式见 [`docs/local-startup.md`](docs/local-startup.md)。
+
 默认使用 OneBullEx 线上公开行情驱动本地 paper 模拟仓，不会提交真实订单：
 
 ```bash
 ONEBULLEX_LIVE_TRADING=false \
 SUBMIT_EXCHANGE=false \
 SYMBOL=BTCUSDT \
-ACCOUNT=paper \
 PROFILE=aggressive \
 EQUITY=1000 \
 POSITION_MODEL=AGGREGATION \
 ./scripts/start-paper-local.sh
 ```
 
-该脚本会初始化数据库，持续同步执行周期、`15m`、`1h` K 线以及标记价格和资金费率，并启动 `papertrade` 与 Dashboard。默认看板地址为 `http://localhost:8082`：
+该脚本会初始化数据库，按本地最新 candle 增量同步执行周期、`15m`、`1h` K 线，持续同步标记价格和资金费率，并启动 `papertrade` 与 Dashboard。默认看板地址为 `http://localhost:8082`：
 
 ```bash
 ./scripts/status-paper-local.sh
@@ -117,19 +118,21 @@ tail -f .runtime/logs/papertrade.log
 ./scripts/stop-paper-local.sh
 ```
 
-真实下单前先在 `.env.local` 配置 OneBullEx key。下面的命令会真实提交订单，并在启动时同步账户快照；`AGGREGATION` 表示单向持仓，双向持仓使用 `DISAGGREGATION`：
+真实下单前先在 `.env.local` 配置 OneBullEx key。切换模式前先停掉旧进程。下面的命令会真实提交订单，并在启动时同步账户快照；`AGGREGATION` 表示单向持仓，双向持仓使用 `DISAGGREGATION`：
 
 ```bash
+./scripts/stop-paper-local.sh
+
 ONEBULLEX_LIVE_TRADING=true \
 SUBMIT_EXCHANGE=true \
 SYMBOL=BTCUSDT \
-ACCOUNT=live-main \
 PROFILE=aggressive \
+EQUITY=1000 \
 POSITION_MODEL=AGGREGATION \
 ./scripts/start-paper-local.sh
 ```
 
-完整启动参数、日志路径和托管方式见 [`docs/local-startup.md`](docs/local-startup.md)。
+如需用真实 key 只读同步真实账户、但策略仍 dry-run，不传 `SUBMIT_EXCHANGE=true` 即可；默认 paper 账户会使用 `paper-live-main`，真实账户快照使用 `LIVE_ACCOUNT=live-main`。
 
 ## 初始化数据库
 
@@ -456,6 +459,8 @@ go run ./cmd/accountsnapshot \
 
 基于已同步的 OneBullEx 本地 K 线运行 paper trading，并写入 `backtest_runs`、`strategy_runs`、`signals`、`performance_snapshots`。如果最新信号是开多或开空，会额外写入订单审计和 `paper_positions`；之后每轮用最新真实行情结算当前持仓、未实现盈亏、止盈和止损，并同步更新 `balances`、`positions`、`margin_snapshots`。
 
+`-watch` 模式下会继续每轮结算持仓和止盈止损，但观望信号/账户快照默认按 `-persist-interval` 节流入库，完整回测记录默认按 `-backtest-interval` 节流入库，避免每 15 秒写一组重复 run/signal/backtest。
+
 默认运行当前短线 `scalp-tpsl` 策略，周期为 `5m`，止盈止损按 ATR 动态计算。高周期趋势过滤默认开启，要求 `15m EMA20/60` 与 `1h EMA20/60` 同向才允许新开仓；浮盈达到 `1R` 后启用保本止损，达到 `1.5R` 后按 `1.2 * ATR` 追踪止损。日亏损达到 `2%` 或连续亏损达到 `3` 次时停止新开仓。如需只跑基线对比，可显式传 `-strategy-type sma`。
 
 ```bash
@@ -489,7 +494,7 @@ go run ./cmd/papertrade \
 
 启用趋势过滤前需同步对应的 `15m` 和 `1h` K 线；一键启动脚本会自动完成这些同步。单独调试且尚无高周期数据时，可临时传 `-trend-filter=false`。
 
-短线 TP/SL 版本会用更短均线窗口提高交易频次，并把按 ATR 计算的止盈价、止损价写入 `orders`。开仓前还会计算 `signal_score`，低于 `-min-signal-score` 的候选开仓会被过滤成观望，并把候选动作、特征和过滤原因写入 `signals.raw_features_json`。小资金想更激进时优先使用 `-profile aggressive`，该档会切到 `3m` 且评分阈值为 `0.50`：
+短线 TP/SL 版本会用更短均线窗口提高交易频次，并把按 ATR 计算的止盈价、止损价写入 `orders`。开仓前还会计算 `signal_score`，低于 `-min-signal-score` 的候选开仓会被过滤成观望，并把候选动作、特征和过滤原因写入 `signals.raw_features_json`。小资金想更激进时优先使用 `-profile aggressive`，该档会使用 OneBullEx 支持的 `5m` 周期且评分阈值为 `0.50`：
 
 ```bash
 go run ./cmd/papertrade \
@@ -516,7 +521,9 @@ go run ./cmd/papertrade \
   -symbol BTCUSDT \
   -equity 1000 \
   -watch \
-  -poll-interval 15s
+  -poll-interval 15s \
+  -persist-interval 1m \
+  -backtest-interval 5m
 ```
 
 ## 每日报告

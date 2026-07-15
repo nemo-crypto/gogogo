@@ -419,8 +419,8 @@ func TestApplyPaperProfileAggressiveDefaultsAndOverrides(t *testing.T) {
 	if strategyID != defaultPaperStrategyID {
 		t.Fatalf("strategy id = %q", strategyID)
 	}
-	if market != "perpetual" || interval != "3m" || strategyType != "scalp-tpsl" {
-		t.Fatalf("market=%q interval=%q strategy_type=%q, want aggressive perp 3m scalp", market, interval, strategyType)
+	if market != "perpetual" || interval != "5m" || strategyType != "scalp-tpsl" {
+		t.Fatalf("market=%q interval=%q strategy_type=%q, want aggressive perp 5m scalp", market, interval, strategyType)
 	}
 	if fast != 3 || slow != 9 {
 		t.Fatalf("windows = %d/%d, want 3/9", fast, slow)
@@ -606,6 +606,56 @@ func TestParseFundingRatePct(t *testing.T) {
 	}
 	if !closeEnough(got, 0.01) {
 		t.Fatalf("funding pct = %f, want 0.01", got)
+	}
+}
+
+func TestPaperWatchStateThrottlesBacktestAndObservationPersistence(t *testing.T) {
+	now := time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC)
+	state := paperWatchState{}
+	config := paperRunConfig{
+		PersistInterval:  time.Minute,
+		BacktestInterval: 5 * time.Minute,
+	}
+
+	first := state.nextOptions(now, config)
+	if !first.SaveObservation || !first.SaveBacktest || !first.SaveAccountSnapshot {
+		t.Fatalf("first options = %+v, want all persistence enabled", first)
+	}
+
+	state.observe(now, paperRunSummary{
+		ObservationSaved: true,
+		BacktestSaved:    true,
+		LatestCandleTime: now.Add(-5 * time.Minute),
+	})
+	second := state.nextOptions(now.Add(30*time.Second), config)
+	if second.SaveObservation || second.SaveBacktest || second.SaveAccountSnapshot {
+		t.Fatalf("second options = %+v, want throttled", second)
+	}
+	if !second.LastObservedCandleTime.Equal(now.Add(-5 * time.Minute)) {
+		t.Fatalf("last candle = %s", second.LastObservedCandleTime)
+	}
+
+	third := state.nextOptions(now.Add(5*time.Minute), config)
+	if !third.SaveObservation || !third.SaveBacktest || !third.SaveAccountSnapshot {
+		t.Fatalf("third options = %+v, want persistence after intervals", third)
+	}
+}
+
+func TestShouldSavePaperObservationForNewCandleAndOrders(t *testing.T) {
+	lastCandle := time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC)
+	options := paperRunOptions{LastObservedCandleTime: lastCandle}
+
+	if shouldSavePaperObservation(options, lastCandle, strategy.SignalHold, "") {
+		t.Fatal("unchanged hold observation saved, want throttled")
+	}
+	if !shouldSavePaperObservation(options, lastCandle.Add(5*time.Minute), strategy.SignalHold, "") {
+		t.Fatal("new candle observation not saved")
+	}
+	if !shouldSavePaperObservation(options, lastCandle, strategy.SignalShort, "") {
+		t.Fatal("entry signal observation not saved")
+	}
+	if !shouldSavePaperObservation(options, lastCandle, strategy.SignalHold, "take_profit") {
+		t.Fatal("close event observation not saved")
 	}
 }
 

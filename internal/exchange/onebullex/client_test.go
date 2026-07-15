@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -93,6 +94,53 @@ func TestClientKlines(t *testing.T) {
 	}
 	if candles[0].CloseTime != time.UnixMilli(1655971200000).UTC().Add(time.Hour) {
 		t.Fatalf("close time = %s, want open + 1h", candles[0].CloseTime)
+	}
+}
+
+func TestClientKlinesAcceptsCodeEnvelopeAndSortsCandles(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":0,"msg":"success","data":[{"s":"btc_usdt","t":1655971500000,"o":"2","h":"2","l":"2","c":"2","a":"2","v":"2"},{"s":"btc_usdt","t":1655971200000,"o":"1","h":"1","l":"1","c":"1","a":"1","v":"1"}],"bizCode":null}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(WithBaseURL(server.URL), WithHTTPClient(server.Client()))
+	candles, err := client.Klines(context.Background(), exchange.KlineRequest{
+		MarketType: marketdata.MarketTypePerpetual,
+		Symbol:     "BTCUSDT",
+		Interval:   "5m",
+	})
+	if err != nil {
+		t.Fatalf("klines: %v", err)
+	}
+	if len(candles) != 2 {
+		t.Fatalf("candles length = %d, want 2", len(candles))
+	}
+	if !candles[0].OpenTime.Before(candles[1].OpenTime) {
+		t.Fatalf("candles are not sorted ascending: %s >= %s", candles[0].OpenTime, candles[1].OpenTime)
+	}
+}
+
+func TestClientKlinesRejectsCodeEnvelopeError(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":-1,"msg":"invalid interval","data":null,"bizCode":"10102"}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(WithBaseURL(server.URL), WithHTTPClient(server.Client()))
+	_, err := client.Klines(context.Background(), exchange.KlineRequest{
+		MarketType: marketdata.MarketTypePerpetual,
+		Symbol:     "BTCUSDT",
+		Interval:   "3m",
+	})
+	if err == nil {
+		t.Fatal("klines error = nil, want invalid interval error")
+	}
+	if !strings.Contains(err.Error(), "code=-1") || !strings.Contains(err.Error(), "invalid interval") {
+		t.Fatalf("klines error = %q, want code and message", err.Error())
 	}
 }
 

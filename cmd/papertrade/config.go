@@ -63,7 +63,7 @@ func applyPaperProfile(profile string, visited map[string]struct{}, flags paperP
 	case "aggressive":
 		setStringFlag(visited, "strategy", flags.strategyID, defaultPaperStrategyID)
 		setStringFlag(visited, "market", flags.market, "perpetual")
-		setStringFlag(visited, "interval", flags.interval, "3m")
+		setStringFlag(visited, "interval", flags.interval, "5m")
 		setStringFlag(visited, "strategy-type", flags.strategyType, "scalp-tpsl")
 		setIntFlag(visited, "fast", flags.fast, defaultPaperFastWindow)
 		setIntFlag(visited, "slow", flags.slow, defaultPaperSlowWindow)
@@ -213,6 +213,8 @@ type paperRunConfig struct {
 	SubmitExchange       bool
 	Watch                bool
 	PollInterval         time.Duration
+	PersistInterval      time.Duration
+	BacktestInterval     time.Duration
 	LookbackCandles      int
 }
 

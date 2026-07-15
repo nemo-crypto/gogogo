@@ -2,9 +2,11 @@ const state = {
   data: null,
   refreshTimer: null,
   loading: false,
+  lastLoadedAt: 0,
 };
 
-const AUTO_REFRESH_MS = 15000;
+const AUTO_REFRESH_MS = 30000;
+const STALE_REFRESH_MS = 10000;
 
 const $ = (id) => document.getElementById(id);
 
@@ -16,7 +18,7 @@ document.addEventListener("DOMContentLoaded", () => {
     $(id).addEventListener("change", loadDashboard);
   });
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) {
+    if (!document.hidden && Date.now() - state.lastLoadedAt > STALE_REFRESH_MS) {
       loadDashboard();
     }
   });
@@ -47,6 +49,7 @@ async function loadDashboard() {
       throw new Error(`请求失败 ${response.status}`);
     }
     state.data = await response.json();
+    state.lastLoadedAt = Date.now();
     render(state.data);
   } catch (error) {
     renderError(error);
@@ -684,7 +687,10 @@ function positionSideLabel(value) {
 
 function accountLabel(value) {
   if (!value) return "--";
-  return value === "paper" ? "paper 模拟账户" : value;
+  if (value === "paper") return "paper 模拟账户";
+  if (value === "paper-live-main") return "真实行情 dry-run";
+  if (value === "live-main") return "真实账户";
+  return value;
 }
 
 function actionLabel(value) {

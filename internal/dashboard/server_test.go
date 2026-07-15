@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -20,7 +21,7 @@ func TestDashboardAPI(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := storage.InitSQLiteSchema(t.Context(), db); err != nil {
+	if err := storage.InitSQLiteSchema(context.Background(), db); err != nil {
 		t.Fatalf("init schema: %v", err)
 	}
 	seedDashboardData(t, db)
@@ -58,6 +59,54 @@ func TestDashboardAPI(t *testing.T) {
 	}
 }
 
+func TestDashboardAPICachesShortLivedResponse(t *testing.T) {
+	t.Setenv("DASHBOARD_CACHE_TTL", "10s")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	if err := storage.InitSQLiteSchema(context.Background(), db); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+	seedDashboardData(t, db)
+
+	server := NewServer(db, "")
+	request := httptest.NewRequest(http.MethodGet, "/api/dashboard?exchange=onebullex&market=perpetual&symbol=BTCUSDT&interval=1h&limit=20", nil)
+	first := httptest.NewRecorder()
+	server.Routes().ServeHTTP(first, request)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status = %d, body = %s", first.Code, first.Body.String())
+	}
+
+	now := time.Date(2026, 7, 12, 3, 0, 0, 0, time.UTC)
+	if _, err := db.ExecContext(context.Background(), `
+INSERT INTO candles (
+	exchange, market_type, symbol, interval, open_time, close_time,
+	open_price, high_price, low_price, close_price, volume, quote_volume,
+	trade_count, source, created_at, updated_at
+) VALUES (
+	'onebullex', 'perpetual', 'BTCUSDT', '1h', ?, ?, '112', '120', '111', '118', '8', '900', 8, 'test', ?, ?
+);
+`, now, now.Add(time.Hour), now, now); err != nil {
+		t.Fatalf("insert extra candle: %v", err)
+	}
+
+	second := httptest.NewRecorder()
+	server.Routes().ServeHTTP(second, request)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status = %d, body = %s", second.Code, second.Body.String())
+	}
+	var data Data
+	if err := json.NewDecoder(second.Body).Decode(&data); err != nil {
+		t.Fatalf("decode cached response: %v", err)
+	}
+	if data.Counts["candles"] != 2 {
+		t.Fatalf("cached candle count = %d, want 2", data.Counts["candles"])
+	}
+}
+
 func TestDashboardPage(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
@@ -78,6 +127,34 @@ func TestDashboardPage(t *testing.T) {
 	}
 }
 
+func TestLoadMarketCoverageDoesNotBlockWithSingleSQLiteConnection(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+
+	if err := storage.InitSQLiteSchema(context.Background(), db); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+	seedDashboardData(t, db)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	records, err := NewServer(db, "").loadMarketCoverage(ctx)
+	if err != nil {
+		t.Fatalf("load market coverage: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("market coverage length = %d, want 1", len(records))
+	}
+	if records[0].LastClose != 112 {
+		t.Fatalf("last close = %.2f, want 112", records[0].LastClose)
+	}
+}
+
 func TestDashboardFiltersLegacyPaperPositionSnapshots(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
@@ -85,11 +162,11 @@ func TestDashboardFiltersLegacyPaperPositionSnapshots(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := storage.InitSQLiteSchema(t.Context(), db); err != nil {
+	if err := storage.InitSQLiteSchema(context.Background(), db); err != nil {
 		t.Fatalf("init schema: %v", err)
 	}
 	now := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
-	_, err = db.ExecContext(t.Context(), `
+	_, err = db.ExecContext(context.Background(), `
 INSERT INTO positions (
 	account_id, exchange, market_type, symbol, position_side, quantity, entry_price,
 	mark_price, liquidation_price, leverage, margin_mode, unrealized_pnl, notional,
@@ -126,11 +203,11 @@ func TestDashboardUsesLatestMarkForPerpetualPaperPosition(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := storage.InitSQLiteSchema(t.Context(), db); err != nil {
+	if err := storage.InitSQLiteSchema(context.Background(), db); err != nil {
 		t.Fatalf("init schema: %v", err)
 	}
 	now := time.Date(2026, 7, 13, 0, 45, 0, 0, time.UTC)
-	_, err = db.ExecContext(t.Context(), `
+	_, err = db.ExecContext(context.Background(), `
 INSERT INTO mark_prices (
 	exchange, symbol, event_time, mark_price, index_price, estimated_settle_price,
 	next_funding_time, created_at
@@ -183,7 +260,7 @@ func TestTablePreviewAPI(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := storage.InitSQLiteSchema(t.Context(), db); err != nil {
+	if err := storage.InitSQLiteSchema(context.Background(), db); err != nil {
 		t.Fatalf("init schema: %v", err)
 	}
 	seedDashboardData(t, db)
@@ -234,7 +311,7 @@ func TestTablePreviewRejectsUnsupportedTable(t *testing.T) {
 func seedDashboardData(t *testing.T, db *sql.DB) {
 	t.Helper()
 	now := time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)
-	_, err := db.ExecContext(t.Context(), `
+	_, err := db.ExecContext(context.Background(), `
 INSERT INTO candles (
 	exchange, market_type, symbol, interval, open_time, close_time,
 	open_price, high_price, low_price, close_price, volume, quote_volume,

@@ -302,6 +302,45 @@ DO UPDATE SET
 	return err
 }
 
+func (r *SQLiteRepository) LatestCandle(ctx context.Context, exchange string, marketType MarketType, symbol string, interval string) (Candle, error) {
+	exchange = normalizeExchange(exchange)
+	marketType = normalizeMarketType(marketType)
+	symbol = normalizeSymbol(symbol)
+	interval = strings.TrimSpace(interval)
+	if err := validateMarket(exchange, marketType, symbol); err != nil {
+		return Candle{}, err
+	}
+	if interval == "" {
+		return Candle{}, errors.New("interval is required")
+	}
+
+	row := r.db.QueryRowContext(ctx, `
+SELECT exchange, market_type, symbol, interval, open_time, close_time,
+	open_price, high_price, low_price, close_price, volume, quote_volume,
+	trade_count, source, created_at, updated_at
+FROM candles
+WHERE exchange = ?
+	AND market_type = ?
+	AND symbol = ?
+	AND interval = ?
+ORDER BY open_time DESC
+LIMIT 1;
+`,
+		exchange,
+		string(marketType),
+		symbol,
+		interval,
+	)
+	candle, err := scanCandle(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Candle{}, ErrNotFound
+		}
+		return Candle{}, err
+	}
+	return candle, nil
+}
+
 func (r *SQLiteRepository) UpsertTrade(ctx context.Context, trade Trade) error {
 	trade, err := normalizeTrade(trade)
 	if err != nil {
@@ -675,6 +714,30 @@ INSERT INTO mark_prices (
 		price.CreatedAt,
 	)
 	return err
+}
+
+func (r *SQLiteRepository) DeleteMarkPricesBefore(ctx context.Context, exchange string, symbol string, cutoff time.Time) (int64, error) {
+	exchange = normalizeExchange(exchange)
+	symbol = normalizeSymbol(symbol)
+	cutoff = cutoff.UTC()
+	if exchange == "" {
+		return 0, errors.New("exchange is required")
+	}
+	if symbol == "" {
+		return 0, errors.New("symbol is required")
+	}
+	if cutoff.IsZero() {
+		return 0, errors.New("cutoff is required")
+	}
+
+	result, err := r.db.ExecContext(ctx, `
+DELETE FROM mark_prices
+WHERE exchange = ? AND symbol = ? AND event_time < ?;
+`, exchange, symbol, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 func (r *SQLiteRepository) UpsertIndexPrice(ctx context.Context, price IndexPrice) error {

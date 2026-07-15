@@ -63,6 +63,14 @@ func TestSQLiteRepositoryUpsertAndListCandles(t *testing.T) {
 	if candles[0].Symbol != "BTCUSDT" {
 		t.Fatalf("symbol = %q, want BTCUSDT", candles[0].Symbol)
 	}
+
+	latest, err := repo.LatestCandle(ctx, "onebullex", MarketTypePerpetual, "BTCUSDT", "1h")
+	if err != nil {
+		t.Fatalf("latest candle: %v", err)
+	}
+	if !latest.OpenTime.Equal(openTime) || latest.Close != "60900.00" {
+		t.Fatalf("latest candle = %s/%s, want %s/60900.00", latest.OpenTime, latest.Close, openTime)
+	}
 }
 
 func TestSQLiteRepositoryFundingRatesAndMarkPrices(t *testing.T) {
@@ -138,6 +146,30 @@ func TestSQLiteRepositoryFundingRatesAndMarkPrices(t *testing.T) {
 	}
 	if !latest.NextFundingTime.Equal(nextFunding) {
 		t.Fatalf("next funding time = %s, want %s", latest.NextFundingTime, nextFunding)
+	}
+
+	if err := repo.UpsertMarkPrice(ctx, MarkPrice{
+		Exchange:   "onebullex",
+		Symbol:     "btcusdt",
+		EventTime:  eventTime.Add(30 * time.Minute),
+		MarkPrice:  "61020.00",
+		IndexPrice: "61000.00",
+	}); err != nil {
+		t.Fatalf("upsert second mark price: %v", err)
+	}
+	deleted, err := repo.DeleteMarkPricesBefore(ctx, "onebullex", "btcusdt", eventTime.Add(15*time.Minute))
+	if err != nil {
+		t.Fatalf("delete mark prices: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted mark prices = %d, want 1", deleted)
+	}
+	latest, err = repo.LatestMarkPrice(ctx, "onebullex", "BTCUSDT")
+	if err != nil {
+		t.Fatalf("latest mark price after delete: %v", err)
+	}
+	if latest.MarkPrice != "61020.00" {
+		t.Fatalf("latest mark price after delete = %q, want 61020.00", latest.MarkPrice)
 	}
 }
 

@@ -30,6 +30,9 @@ func run() error {
 		exchange         = flag.String("exchange", env("EXCHANGE_NAME", onebullex.ExchangeName), "exchange name")
 		market           = flag.String("market", "perpetual", "market type")
 		syncLive         = flag.Bool("sync-live", false, "sync readonly account snapshot from exchange API")
+		watch            = flag.Bool("watch", false, "keep syncing live account snapshots")
+		pollEvery        = flag.Duration("poll-interval", 1*time.Minute, "poll interval when -watch is enabled")
+		syncConfigs      = flag.Bool("sync-position-configs", true, "sync position config metadata with live account snapshots")
 		asset            = flag.String("asset", "USDT", "balance asset")
 		free             = flag.Float64("free", 0, "free balance")
 		locked           = flag.Float64("locked", 0, "locked balance")
@@ -69,7 +72,10 @@ func run() error {
 	exchangeName := normalizeExchangeName(*exchange)
 
 	if *syncLive {
-		return syncLiveAccountSnapshot(ctx, repo, *accountID, exchangeName, *market, *symbol)
+		if *watch {
+			return watchLiveAccountSnapshot(context.Background(), repo, *accountID, exchangeName, *market, *symbol, *pollEvery, *syncConfigs)
+		}
+		return syncLiveAccountSnapshot(ctx, repo, *accountID, exchangeName, *market, *symbol, *syncConfigs)
 	}
 
 	if _, err := repo.SaveBalanceSnapshot(ctx, portfolio.BalanceSnapshot{
@@ -118,7 +124,7 @@ func run() error {
 		return fmt.Errorf("save margin snapshot: %w", err)
 	}
 
-	fmt.Printf("account_snapshot_saved account=%s exchange=%s time=%s\n", *accountID, exchangeName, now.Format(time.RFC3339))
+	log.Printf("account_snapshot_saved account=%s exchange=%s time=%s", *accountID, exchangeName, now.Format(time.RFC3339))
 	return nil
 }
 
@@ -126,7 +132,7 @@ func env(key string, fallback string) string {
 	return config.Env(key, fallback)
 }
 
-func syncLiveAccountSnapshot(ctx context.Context, repo *portfolio.SQLiteRepository, accountID string, exchangeName string, market string, symbol string) error {
+func syncLiveAccountSnapshot(ctx context.Context, repo *portfolio.SQLiteRepository, accountID string, exchangeName string, market string, symbol string, syncConfigs bool) error {
 	if exchangeName != onebullex.ExchangeName {
 		return fmt.Errorf("live snapshot currently supports %s only", onebullex.ExchangeName)
 	}
@@ -141,16 +147,41 @@ func syncLiveAccountSnapshot(ctx context.Context, repo *portfolio.SQLiteReposito
 	if err := saveExchangeSnapshot(ctx, repo, snapshot, market); err != nil {
 		return err
 	}
-	configs, err := syncOneBullExPositionConfigs(ctx, repo, client, accountID, snapshot, symbol)
-	if err != nil {
-		return err
+	configs := 0
+	if syncConfigs {
+		configs, err = syncOneBullExPositionConfigs(ctx, repo, client, accountID, snapshot, symbol)
+		if err != nil {
+			return err
+		}
 	}
-	fmt.Printf("live_account_snapshot_saved account=%s exchange=%s balances=%d positions=%d time=%s readonly=%t\n",
+	log.Printf("live_account_snapshot_saved account=%s exchange=%s balances=%d positions=%d time=%s readonly=%t",
 		snapshot.AccountID, snapshot.Exchange, len(snapshot.Balances), len(snapshot.Positions), snapshot.SnapshotTime.Format(time.RFC3339), snapshot.ReadOnly)
 	if configs > 0 {
-		fmt.Printf("live_position_configs_saved account=%s exchange=%s configs=%d\n", snapshot.AccountID, snapshot.Exchange, configs)
+		log.Printf("live_position_configs_saved account=%s exchange=%s configs=%d", snapshot.AccountID, snapshot.Exchange, configs)
 	}
 	return nil
+}
+
+func watchLiveAccountSnapshot(ctx context.Context, repo *portfolio.SQLiteRepository, accountID string, exchangeName string, market string, symbol string, pollEvery time.Duration, syncConfigs bool) error {
+	if pollEvery <= 0 {
+		pollEvery = time.Minute
+	}
+	log.Printf("live account snapshot watch started: account=%s exchange=%s symbol=%s poll_interval=%s", accountID, exchangeName, symbol, pollEvery)
+	for {
+		runCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		if err := syncLiveAccountSnapshot(runCtx, repo, accountID, exchangeName, market, symbol, syncConfigs); err != nil {
+			log.Printf("live account snapshot watch error: %v", err)
+		}
+		cancel()
+
+		timer := time.NewTimer(pollEvery)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func saveExchangeSnapshot(ctx context.Context, repo *portfolio.SQLiteRepository, snapshot exchangemodel.AccountSnapshot, market string) error {

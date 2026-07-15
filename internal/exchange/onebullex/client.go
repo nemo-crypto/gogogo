@@ -162,6 +162,9 @@ func (c *Client) Klines(ctx context.Context, request exchangemodel.KlineRequest)
 		}
 		candles = append(candles, candle)
 	}
+	sort.Slice(candles, func(i, j int) bool {
+		return candles[i].OpenTime.Before(candles[j].OpenTime)
+	})
 	return candles, nil
 }
 
@@ -685,11 +688,13 @@ func (c *Client) doRequestOnce(ctx context.Context, method string, path string, 
 	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
 		return retryableMethod(method), err
 	}
-	if envelope.ReturnCode != 0 {
-		if envelope.MsgInfo == "" {
-			envelope.MsgInfo = "request failed"
+	code := envelope.CodeValue()
+	if code != 0 {
+		msg := envelope.Message()
+		if msg == "" {
+			msg = "request failed"
 		}
-		return false, fmt.Errorf("onebullex %s %s returnCode=%d msg=%s", method, path, envelope.ReturnCode, envelope.MsgInfo)
+		return false, fmt.Errorf("onebullex %s %s code=%d msg=%s", method, path, code, msg)
 	}
 	if target == nil {
 		return false, nil
@@ -997,9 +1002,28 @@ func isIntegerString(value string) bool {
 }
 
 type responseEnvelope[T any] struct {
-	ReturnCode int    `json:"returnCode"`
+	ReturnCode *int   `json:"returnCode"`
+	Code       *int   `json:"code"`
 	MsgInfo    string `json:"msgInfo"`
+	Msg        string `json:"msg"`
 	Data       T      `json:"data"`
+}
+
+func (r responseEnvelope[T]) CodeValue() int {
+	if r.ReturnCode != nil {
+		return *r.ReturnCode
+	}
+	if r.Code != nil {
+		return *r.Code
+	}
+	return 0
+}
+
+func (r responseEnvelope[T]) Message() string {
+	if strings.TrimSpace(r.MsgInfo) != "" {
+		return r.MsgInfo
+	}
+	return r.Msg
 }
 
 type rawKline struct {
