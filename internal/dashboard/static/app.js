@@ -98,8 +98,10 @@ function startAutoRefresh() {
 function render(data) {
   $("subtitle").textContent = "OneBullEx 永续合约 / 持仓 / 盈亏 / 回测入库";
   $("generatedAt").textContent = `更新于 ${formatTime(data.generated_at)}`;
-  $("runtimeBadge").textContent = data.runtime.halted ? "已停机" : "运行中";
-  $("runtimeBadge").className = data.runtime.halted ? "badge badge-danger" : "badge badge-ok";
+  const runtime = data.runtime || {};
+  const runtimeAccount = runtime.account_id ? ` / ${accountLabel(runtime.account_id)}` : "";
+  $("runtimeBadge").textContent = runtime.halted ? "已停机" : `运行中${runtimeAccount}`;
+  $("runtimeBadge").className = runtime.halted ? "badge badge-danger" : "badge badge-ok";
 
   renderWarnings(data.warnings || []);
   renderMetrics(data);
@@ -122,14 +124,18 @@ function renderWarnings(warnings) {
 }
 
 function renderMetrics(data) {
-  const balances = data.balances || [];
-  const latestBalance = balances[0];
+  const latestBalance = selectPrimaryBalance(data);
   const positions = data.positions || [];
   const positionPnl = positions.reduce((total, row) => total + positionPnL(row).value, 0);
   const activePositions = positions.filter((row) => Number(row.quantity || 0) !== 0);
   const positionSymbols = activePositions.map((row) => row.symbol).slice(0, 3).join(", ");
   const backtests = data.backtests || [];
   const latestBacktest = backtests[0];
+  const executionStats = data.execution_stats || {};
+  const paperPositions = Number(executionStats.paper_positions || 0);
+  const acceptedOrders = Number(executionStats.accepted_orders || 0);
+  const blockedOrders = Number(executionStats.risk_halted_orders || 0) + Number(executionStats.risk_rejected_orders || 0);
+  const backtestTrades = latestBacktest ? Number(latestBacktest.trade_count || 0) : 0;
 
   $("accountEquity").textContent = latestBalance ? money(latestBalance.total || latestBalance.usd_value) : "--";
   $("accountMeta").textContent = latestBalance
@@ -148,6 +154,10 @@ function renderMetrics(data) {
   $("latestBacktestMeta").textContent = latestBacktest
     ? `Run ${latestBacktest.id} / ${strategyDisplayName(latestBacktest)}`
     : "暂无回测";
+
+  $("executionStats").textContent = `${number(paperPositions)} 轮`;
+  $("executionStatsMeta").textContent =
+    `paper开平仓通过 ${number(acceptedOrders)} 单 / 风控拦截 ${number(blockedOrders)} 单 / 回测交易 ${number(backtestTrades)} 笔`;
 }
 
 function renderStrategyOverview(data) {
@@ -319,13 +329,7 @@ function renderTablePreview(table) {
 }
 
 function renderTradeActions(data) {
-  const orders = (data.orders || []).map((row) => ({
-    time: row.created_at,
-    title: `${row.symbol} ${sideLabel(row.side)}`,
-    meta: `${marketLabel(row.market_type)} / ${statusLabel(row.status)}${row.exchange_order_id ? ` / OneBullEx ${row.exchange_order_id}` : ""}`,
-    value: `${money(row.quantity)} @ ${money(row.price)} / TP ${moneyOrDash(row.take_profit_price)} SL ${moneyOrDash(row.stop_price)}${row.exchange_status ? ` / ${row.exchange_status}` : ""}`,
-    tone: row.risk_decision === "allow" ? "positive" : "negative",
-  }));
+  const orders = (data.orders || []).map(orderActionCard);
   const signals = (data.signals || []).map((row) => ({
     time: row.signal_time,
     title: `${row.symbol} ${actionLabel(row.action)}`,
@@ -350,6 +354,26 @@ function renderTradeActions(data) {
       </div>`,
     )
     .join("") || emptyBlock("暂无买卖动作");
+}
+
+function orderActionCard(row) {
+  const blocked = row.status === "risk_halted" || row.status === "risk_rejected";
+  if (blocked) {
+    return {
+      time: row.created_at,
+      title: `${row.symbol} ${statusLabel(row.status)}`,
+      meta: `${marketLabel(row.market_type)} / ${decisionLabel(row.risk_decision)} / 不是成交`,
+      value: row.risk_reason || "风控拦截，未提交订单",
+      tone: "negative",
+    };
+  }
+  return {
+    time: row.created_at,
+    title: `${row.symbol} ${sideLabel(row.side)}`,
+    meta: `${marketLabel(row.market_type)} / ${statusLabel(row.status)}${row.exchange_order_id ? ` / OneBullEx ${row.exchange_order_id}` : ""}`,
+    value: `${money(row.quantity)} @ ${money(row.price)} / TP ${moneyOrDash(row.take_profit_price)} SL ${moneyOrDash(row.stop_price)}${row.exchange_status ? ` / ${row.exchange_status}` : ""}`,
+    tone: row.risk_decision === "allow" ? "positive" : "negative",
+  };
 }
 
 function renderOrders(rows) {
@@ -380,6 +404,31 @@ function renderBalances(rows) {
 function renderPositions(rows) {
   $("positionUpdatedAt").textContent = rows.length ? `更新 ${formatTime(rows[0].snapshot_time)}` : "暂无持仓";
   $("positionRows").innerHTML = positionGroup("合约持仓", rows);
+}
+
+function selectPrimaryBalance(data) {
+  const balances = data.balances || [];
+  if (!balances.length) return null;
+  const preferredAccounts = [];
+  pushUnique(preferredAccounts, data.runtime && data.runtime.account_id);
+  for (const row of data.positions || []) {
+    pushUnique(preferredAccounts, row.account_id);
+  }
+  for (const row of data.orders || []) {
+    pushUnique(preferredAccounts, row.account_id);
+  }
+  ["paper", "paper-live-main", "live-main"].forEach((accountID) => pushUnique(preferredAccounts, accountID));
+  for (const accountID of preferredAccounts) {
+    const match = balances.find((row) => row.account_id === accountID);
+    if (match) return match;
+  }
+  return balances[0];
+}
+
+function pushUnique(values, value) {
+  if (value && !values.includes(value)) {
+    values.push(value);
+  }
 }
 
 function positionGroup(title, rows) {
@@ -665,6 +714,7 @@ function sideLabel(value) {
 function statusLabel(value) {
   const labels = {
     dry_run_accepted: "模拟通过",
+    risk_halted: "风控熔断",
     risk_rejected: "风控拒绝",
     planned: "已计划",
     submitted: "已提交",

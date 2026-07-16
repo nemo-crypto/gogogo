@@ -474,6 +474,57 @@ func (r *SQLiteRepository) SaveBalanceSnapshot(ctx context.Context, snapshot Bal
 	return result.LastInsertId()
 }
 
+func (r *SQLiteRepository) LatestLiveBalanceSnapshot(ctx context.Context, accountID string, exchange string, asset string) (BalanceSnapshot, error) {
+	accountID = strings.TrimSpace(accountID)
+	exchange = strings.ToLower(strings.TrimSpace(exchange))
+	asset = strings.ToUpper(strings.TrimSpace(asset))
+	if accountID == "" || exchange == "" || asset == "" {
+		return BalanceSnapshot{}, errors.New("account id, exchange and asset are required")
+	}
+	row := r.db.QueryRowContext(ctx, `
+	SELECT id, account_id, exchange, asset, free, locked, total, usd_value,
+		wallet_balance, open_order_margin_frozen, isolated_margin, crossed_margin,
+		available_balance_raw, bonus, raw_json, snapshot_time, created_at
+	FROM balances
+	WHERE account_id = ?
+		AND exchange = ?
+		AND asset = ?
+		AND (wallet_balance <> '' OR available_balance_raw <> '' OR raw_json <> '')
+	ORDER BY snapshot_time DESC, id DESC
+	LIMIT 1;
+	`, accountID, exchange, asset)
+	return scanBalanceSnapshot(row)
+}
+
+func scanBalanceSnapshot(row interface {
+	Scan(dest ...any) error
+}) (BalanceSnapshot, error) {
+	var snapshot BalanceSnapshot
+	err := row.Scan(
+		&snapshot.ID,
+		&snapshot.AccountID,
+		&snapshot.Exchange,
+		&snapshot.Asset,
+		&snapshot.Free,
+		&snapshot.Locked,
+		&snapshot.Total,
+		&snapshot.USDValue,
+		&snapshot.WalletBalance,
+		&snapshot.OpenOrderMarginFrozen,
+		&snapshot.IsolatedMargin,
+		&snapshot.CrossedMargin,
+		&snapshot.AvailableBalance,
+		&snapshot.Bonus,
+		&snapshot.RawJSON,
+		&snapshot.SnapshotTime,
+		&snapshot.CreatedAt,
+	)
+	if err != nil {
+		return BalanceSnapshot{}, err
+	}
+	return snapshot, nil
+}
+
 func (r *SQLiteRepository) SavePositionSnapshot(ctx context.Context, snapshot PositionSnapshot) (int64, error) {
 	snapshot.AccountID = strings.TrimSpace(snapshot.AccountID)
 	snapshot.Exchange = strings.ToLower(strings.TrimSpace(snapshot.Exchange))

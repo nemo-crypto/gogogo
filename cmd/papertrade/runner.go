@@ -154,7 +154,9 @@ func runPaperStrategy(ctx context.Context, db *sql.DB, config paperRunConfig, op
 	if err != nil {
 		return paperRunSummary{}, fmt.Errorf("list candles: %w", err)
 	}
-	result, err := runPaperBacktest(candles, paperStrategyConfig{
+	signalCandles := closedPaperCandles(candles, config.End)
+	ignoredOpenCandles := len(candles) - len(signalCandles)
+	result, err := runPaperBacktest(signalCandles, paperStrategyConfig{
 		StrategyType:         config.StrategyType,
 		MarketType:           config.MarketType,
 		FastWindow:           config.FastWindow,
@@ -185,7 +187,7 @@ func runPaperStrategy(ctx context.Context, db *sql.DB, config paperRunConfig, op
 	if err != nil {
 		return paperRunSummary{}, fmt.Errorf("run paper strategy: %w", err)
 	}
-	latestCandleTime := latestPaperCandleTime(candles)
+	latestCandleTime := latestPaperCandleTime(signalCandles)
 
 	summary := paperRunSummary{
 		LatestCandleTime: latestCandleTime,
@@ -281,7 +283,7 @@ func runPaperStrategy(ctx context.Context, db *sql.DB, config paperRunConfig, op
 	if err != nil {
 		return paperRunSummary{}, fmt.Errorf("encode strategy config: %w", err)
 	}
-	marketSnapshot, err := latestPaperMarketSnapshot(ctx, mdRepo, config, candles)
+	marketSnapshot, err := latestPaperMarketSnapshot(ctx, mdRepo, config, signalCandles)
 	if err != nil {
 		return paperRunSummary{}, err
 	}
@@ -318,10 +320,14 @@ func runPaperStrategy(ctx context.Context, db *sql.DB, config paperRunConfig, op
 		FeeRate:         config.FeeRate,
 		SlippageRate:    config.SlippageRate,
 		StrategyType:    config.StrategyType,
-		Candles:         candles,
+		Candles:         signalCandles,
 		AllowPaperState: true,
-		SaveSnapshots:   options.SaveAccountSnapshot,
+		SaveSnapshots:   options.SaveAccountSnapshot && shouldSavePaperAccountSnapshots(config),
 	})
+	if err != nil {
+		return paperRunSummary{}, err
+	}
+	liveAccount, err := maybeApplyLiveAccountBalance(ctx, portfolioRepo, config, &paperState)
 	if err != nil {
 		return paperRunSummary{}, err
 	}
@@ -338,7 +344,7 @@ func runPaperStrategy(ctx context.Context, db *sql.DB, config paperRunConfig, op
 		summary.ClosedOrder = true
 		log.Printf("paper_close_order_id=%d status=%s decision=%s exchange_order_id=%s reason=%s", closeOrder.ID, closeOrder.Status, closeOrder.RiskDecision, closeOrder.ExchangeOrderID, paperState.CloseNote)
 	}
-	signal := paperSignalAction(candles, result, paperStrategyConfig{
+	signal := paperSignalAction(signalCandles, result, paperStrategyConfig{
 		StrategyType:         config.StrategyType,
 		MarketType:           config.MarketType,
 		FastWindow:           config.FastWindow,
@@ -364,7 +370,7 @@ func runPaperStrategy(ctx context.Context, db *sql.DB, config paperRunConfig, op
 		PullbackTolerancePct: config.PullbackTolerancePct,
 	})
 	candidateAction := signal.Action
-	assessment := assessPaperSignal(candles, result, signal, marketSnapshot, config)
+	assessment := assessPaperSignal(signalCandles, result, signal, marketSnapshot, config)
 	action := candidateAction
 	if paperState.Open {
 		action = strategy.SignalHold
@@ -376,6 +382,16 @@ func runPaperStrategy(ctx context.Context, db *sql.DB, config paperRunConfig, op
 		assessment.Reason = trendRegimeBlockReason(trendRegime, candidateAction)
 	} else if isEntryAction(action) && !assessment.AllowEntry {
 		action = strategy.SignalHold
+	}
+	if isEntryAction(action) {
+		if halt := paperEntryRiskHalt(config, paperState); halt.Reason != "" {
+			action = strategy.SignalHold
+			assessment.AllowEntry = false
+			assessment.Reason = halt.Reason
+			assessment.Features["risk_halt_reason"] = halt.Reason
+			assessment.Features["risk_halt_message"] = halt.Message
+			appendEntryBlocker(assessment.Features, halt.Reason)
+		}
 	}
 	assessment.Features["trend_regime"] = trendRegime.Regime
 	assessment.Features["trend_regime_reason"] = trendRegime.Reason
@@ -432,6 +448,8 @@ func runPaperStrategy(ctx context.Context, db *sql.DB, config paperRunConfig, op
 		"daily_realized_pnl":      paperState.DailyRealizedPnL,
 		"consecutive_losses":      paperState.ConsecutiveLosses,
 		"latest_signal_input":     normalizedStrategyType(config.StrategyType),
+		"signal_closed_candles":   len(signalCandles),
+		"ignored_open_candles":    ignoredOpenCandles,
 		"candidate_action":        candidateAction,
 		"final_action":            action,
 		"position_side":           signal.PositionSide,
@@ -454,6 +472,11 @@ func runPaperStrategy(ctx context.Context, db *sql.DB, config paperRunConfig, op
 		"funding_rate_pct":        marketSnapshot.LatestFundingRatePct,
 		"funding_rate_time":       marketSnapshot.FundingRateTime,
 		"funding_rate_source":     marketSnapshot.FundingRateSource,
+		"live_account_applied":    liveAccount.Applied,
+		"live_account_source":     liveAccount.Source,
+		"live_account_equity":     liveAccount.Equity,
+		"live_account_available":  liveAccount.AvailableBalance,
+		"live_account_time":       liveAccount.SnapshotTime,
 	})
 	if err != nil {
 		return paperRunSummary{}, fmt.Errorf("encode signal features: %w", err)
@@ -552,11 +575,11 @@ func runPaperStrategy(ctx context.Context, db *sql.DB, config paperRunConfig, op
 		}
 		summary.RunID = runID
 		summary.ObservationSaved = true
-		summary.AccountSaved = options.SaveAccountSnapshot
+		summary.AccountSaved = options.SaveAccountSnapshot && shouldSavePaperAccountSnapshots(config)
 	}
 
 	if action != strategy.SignalHold {
-		effectiveTPSL, err := paperEffectiveTPSL(candles, config)
+		effectiveTPSL, err := paperEffectiveTPSL(signalCandles, config)
 		if err != nil {
 			return paperRunSummary{}, err
 		}
@@ -627,6 +650,7 @@ func runPaperStrategy(ctx context.Context, db *sql.DB, config paperRunConfig, op
 			FeeRate:         config.FeeRate,
 			SlippageRate:    config.SlippageRate,
 			OpenedAt:        latestTime,
+			SaveSnapshots:   shouldSavePaperAccountSnapshots(config),
 		})
 		if err != nil {
 			return paperRunSummary{}, err
@@ -636,6 +660,129 @@ func runPaperStrategy(ctx context.Context, db *sql.DB, config paperRunConfig, op
 		log.Printf("paper_position_id=%d status=open entry=%.8f mark=%.8f pnl=%.8f", opened.ID, opened.EntryPrice, opened.MarkPrice, paperPositionNetPnL(opened, latestPrice, config.FeeRate, config.SlippageRate))
 	}
 
-	log.Printf("paper_tick run_id=%d backtest_run_id=%d observation_saved=%t backtest_saved=%t action=%s strategy=%s symbol=%s return_pct=%.4f excess_pct=%.4f drawdown_pct=%.4f trades=%d", runID, backtestRunID, summary.ObservationSaved, summary.BacktestSaved, action, config.StrategyID, config.Symbol, result.TotalReturnPct, result.ExcessReturnPct, result.MaxDrawdownPct, len(result.Trades))
+	logPaperTick(runID, backtestRunID, summary, action, candidateAction, assessment, trendRegime, marketSnapshot, liveAccount, paperState, config, ignoredOpenCandles, result)
 	return summary, nil
+}
+
+func logPaperTick(runID int64, backtestRunID int64, summary paperRunSummary, action strategy.SignalAction, candidate strategy.SignalAction, assessment paperSignalAssessment, trendRegime paperTrendRegime, snapshot paperMarketSnapshot, liveAccount liveAccountBalanceOverride, paperState paperAccountState, config paperRunConfig, ignoredOpenCandles int, result backtest.Result) {
+	features := assessment.Features
+	accountSource := liveAccount.Source
+	accountEquity := paperState.Equity
+	accountAvailable := paperState.AvailableBalance
+	if liveAccount.Applied {
+		accountEquity = liveAccount.Equity
+		accountAvailable = liveAccount.AvailableBalance
+	}
+	log.Printf(
+		"paper_tick run_id=%d backtest_run_id=%d observation_saved=%t backtest_saved=%t action=%s candidate=%s reason=%s score=%.4f allowed=%t blockers=%v trend=%s trend_reason=%s trend_long=%t trend_short=%t spread=%.4f min_spread=%.4f atr=%.4f min_atr=%.4f volume=%.4f min_volume=%.4f ignored_open_candles=%d price_source=%s signal_candle_close=%s account_source=%s account_equity=%.8f account_available=%.8f strategy=%s symbol=%s return_pct=%.4f excess_pct=%.4f drawdown_pct=%.4f backtest_trades=%d",
+		runID,
+		backtestRunID,
+		summary.ObservationSaved,
+		summary.BacktestSaved,
+		action,
+		candidate,
+		assessment.Reason,
+		assessment.Score,
+		assessment.AllowEntry,
+		features["entry_blockers"],
+		trendRegime.Regime,
+		trendRegime.Reason,
+		trendRegime.AllowLong,
+		trendRegime.AllowShort,
+		logFeatureFloat(features, "trend_spread_pct"),
+		config.MinTrendSpreadPct,
+		logFeatureFloat(features, "atr_pct"),
+		config.MinATRPct,
+		logFeatureFloat(features, "volume_ratio"),
+		config.MinVolumeRatio,
+		ignoredOpenCandles,
+		snapshot.PriceSource,
+		logTime(snapshot.CandleCloseTime),
+		accountSource,
+		accountEquity,
+		accountAvailable,
+		config.StrategyID,
+		config.Symbol,
+		result.TotalReturnPct,
+		result.ExcessReturnPct,
+		result.MaxDrawdownPct,
+		len(result.Trades),
+	)
+}
+
+type paperRiskHalt struct {
+	Reason  string
+	Message string
+}
+
+func paperEntryRiskHalt(config paperRunConfig, state paperAccountState) paperRiskHalt {
+	equity := state.Equity
+	if equity <= 0 {
+		equity = config.Equity
+	}
+	if equity > 0 && config.MaxDailyLossPct > 0 && state.DailyRealizedPnL < 0 {
+		lossPct := -state.DailyRealizedPnL / equity * 100
+		if lossPct >= config.MaxDailyLossPct {
+			return paperRiskHalt{
+				Reason:  "daily_loss_halt",
+				Message: fmt.Sprintf("daily loss %.2f%% reached limit %.2f%%", lossPct, config.MaxDailyLossPct),
+			}
+		}
+	}
+	if config.MaxConsecutiveLosses > 0 && state.ConsecutiveLosses >= config.MaxConsecutiveLosses {
+		return paperRiskHalt{
+			Reason:  "consecutive_loss_halt",
+			Message: fmt.Sprintf("consecutive losses %d reached limit %d", state.ConsecutiveLosses, config.MaxConsecutiveLosses),
+		}
+	}
+	return paperRiskHalt{}
+}
+
+func appendEntryBlocker(features map[string]any, blocker string) {
+	if features == nil || blocker == "" {
+		return
+	}
+	switch existing := features["entry_blockers"].(type) {
+	case []string:
+		for _, value := range existing {
+			if value == blocker {
+				return
+			}
+		}
+		features["entry_blockers"] = append(existing, blocker)
+	case []any:
+		for _, value := range existing {
+			if text, ok := value.(string); ok && text == blocker {
+				return
+			}
+		}
+		features["entry_blockers"] = append(existing, blocker)
+	default:
+		features["entry_blockers"] = []string{blocker}
+	}
+}
+
+func logFeatureFloat(features map[string]any, key string) float64 {
+	if features == nil {
+		return 0
+	}
+	switch value := features[key].(type) {
+	case float64:
+		return value
+	case float32:
+		return float64(value)
+	case int:
+		return float64(value)
+	case int64:
+		return float64(value)
+	default:
+		return 0
+	}
+}
+
+func logTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339)
 }

@@ -372,6 +372,12 @@ func TestApplyPaperProfileAggressiveDefaultsAndOverrides(t *testing.T) {
 	leverage := 1.0
 	signalFilter := false
 	minSignal := 0.0
+	trendFilter := false
+	trendInterval := ""
+	macroInterval := ""
+	trendFast := 0
+	trendSlow := 0
+	trendMin := 0.0
 
 	err := applyPaperProfile("aggressive", map[string]struct{}{"leverage": {}}, paperProfileFlags{
 		strategyID:    &strategyID,
@@ -412,6 +418,12 @@ func TestApplyPaperProfileAggressiveDefaultsAndOverrides(t *testing.T) {
 		leverage:      &leverage,
 		signalFilter:  &signalFilter,
 		minSignal:     &minSignal,
+		trendFilter:   &trendFilter,
+		trendInterval: &trendInterval,
+		macroInterval: &macroInterval,
+		trendFast:     &trendFast,
+		trendSlow:     &trendSlow,
+		trendMin:      &trendMin,
 	})
 	if err != nil {
 		t.Fatalf("apply profile: %v", err)
@@ -445,6 +457,331 @@ func TestApplyPaperProfileAggressiveDefaultsAndOverrides(t *testing.T) {
 	}
 	if !signalFilter || !closeEnough(minSignal, 0.50) {
 		t.Fatalf("signal filter = %v min=%f, want true 0.50", signalFilter, minSignal)
+	}
+	if !trendFilter || trendInterval != "15m" || macroInterval != "1h" || trendFast != 20 || trendSlow != 60 || !closeEnough(trendMin, 0.05) {
+		t.Fatalf("trend profile = %v %s/%s %d/%d min=%f", trendFilter, trendInterval, macroInterval, trendFast, trendSlow, trendMin)
+	}
+}
+
+func TestApplyPaperProfileSmallScalpDefaults(t *testing.T) {
+	strategyID := "sma-paper"
+	market := "manual"
+	interval := "1h"
+	strategyType := "sma"
+	fast := 12
+	slow := 48
+	takeProfitPct := 0.0
+	stopLossPct := 0.0
+	dynamicTPSL := false
+	takeATRMult := 0.0
+	stopATRMult := 0.0
+	minTPPct := 0.0
+	maxTPPct := 0.0
+	minSLPct := 0.0
+	maxSLPct := 0.0
+	cooldownBars := 0
+	minSpreadPct := 0.0
+	confirmBars := 0
+	atrWindow := 0
+	minATRPct := 0.0
+	maxATRPct := 0.0
+	volumeWindow := 0
+	minVolume := 0.0
+	maxExtension := 0.0
+	pullbackBars := 0
+	pullbackTol := 0.0
+	feeRate := 0.0
+	slippageRate := 0.0
+	riskPct := 0.0
+	maxNotional := 0.0
+	maxMargin := 0.0
+	maxBalanceUse := 0.0
+	minLiqDist := 0.0
+	maxOrderRisk := 0.0
+	maxLeverage := 0.0
+	leverage := 0.0
+	signalFilter := false
+	minSignal := 0.0
+	trendFilter := false
+	trendInterval := ""
+	macroInterval := ""
+	trendFast := 0
+	trendSlow := 0
+	trendMin := 0.0
+
+	err := applyPaperProfile("small-scalp", map[string]struct{}{}, paperProfileFlags{
+		strategyID:    &strategyID,
+		market:        &market,
+		interval:      &interval,
+		strategyType:  &strategyType,
+		fast:          &fast,
+		slow:          &slow,
+		takeProfitPct: &takeProfitPct,
+		stopLossPct:   &stopLossPct,
+		dynamicTPSL:   &dynamicTPSL,
+		takeATRMult:   &takeATRMult,
+		stopATRMult:   &stopATRMult,
+		minTPPct:      &minTPPct,
+		maxTPPct:      &maxTPPct,
+		minSLPct:      &minSLPct,
+		maxSLPct:      &maxSLPct,
+		cooldownBars:  &cooldownBars,
+		minSpreadPct:  &minSpreadPct,
+		confirmBars:   &confirmBars,
+		atrWindow:     &atrWindow,
+		minATRPct:     &minATRPct,
+		maxATRPct:     &maxATRPct,
+		volumeWindow:  &volumeWindow,
+		minVolume:     &minVolume,
+		maxExtension:  &maxExtension,
+		pullbackBars:  &pullbackBars,
+		pullbackTol:   &pullbackTol,
+		feeRate:       &feeRate,
+		slippageRate:  &slippageRate,
+		riskPct:       &riskPct,
+		maxNotional:   &maxNotional,
+		maxMargin:     &maxMargin,
+		maxBalanceUse: &maxBalanceUse,
+		minLiqDist:    &minLiqDist,
+		maxOrderRisk:  &maxOrderRisk,
+		maxLeverage:   &maxLeverage,
+		leverage:      &leverage,
+		signalFilter:  &signalFilter,
+		minSignal:     &minSignal,
+		trendFilter:   &trendFilter,
+		trendInterval: &trendInterval,
+		macroInterval: &macroInterval,
+		trendFast:     &trendFast,
+		trendSlow:     &trendSlow,
+		trendMin:      &trendMin,
+	})
+	if err != nil {
+		t.Fatalf("apply small scalp profile: %v", err)
+	}
+	if normalizedPaperProfile("small") != "small-scalp" || normalizedPaperProfile("small-capital") != "small-scalp" {
+		t.Fatalf("small aliases did not normalize to small-scalp")
+	}
+	if market != "perpetual" || interval != "5m" || strategyType != "scalp-tpsl" {
+		t.Fatalf("market=%q interval=%q strategy_type=%q, want small scalp perp 5m scalp", market, interval, strategyType)
+	}
+	if !closeEnough(takeProfitPct, 0.65) || !closeEnough(stopLossPct, 0.40) {
+		t.Fatalf("tp/sl = %f/%f, want 0.65/0.40", takeProfitPct, stopLossPct)
+	}
+	if !dynamicTPSL || !closeEnough(takeATRMult, 1.35) || !closeEnough(stopATRMult, 0.90) {
+		t.Fatalf("dynamic tpsl = %v multipliers=%f/%f, want true 1.35/0.90", dynamicTPSL, takeATRMult, stopATRMult)
+	}
+	if !closeEnough(minTPPct, 0.45) || !closeEnough(maxTPPct, 1.20) || !closeEnough(minSLPct, 0.25) || !closeEnough(maxSLPct, 0.65) {
+		t.Fatalf("dynamic tpsl bounds tp=%f/%f sl=%f/%f", minTPPct, maxTPPct, minSLPct, maxSLPct)
+	}
+	if !closeEnough(minSpreadPct, 0.015) || !closeEnough(minATRPct, 0.05) || !closeEnough(minVolume, 1.00) {
+		t.Fatalf("entry filters spread=%f atr=%f volume=%f", minSpreadPct, minATRPct, minVolume)
+	}
+	if !closeEnough(maxExtension, 0.22) || pullbackBars != 3 || !closeEnough(pullbackTol, 0.08) {
+		t.Fatalf("entry filters extension=%f pullback=%d/%f", maxExtension, pullbackBars, pullbackTol)
+	}
+	if !closeEnough(riskPct, 0.80) || !closeEnough(maxNotional, 150) || !closeEnough(maxMargin, 45) || !closeEnough(maxBalanceUse, 75) || !closeEnough(maxOrderRisk, 1.20) {
+		t.Fatalf("risk profile risk=%f notional=%f margin=%f balance=%f order_risk=%f", riskPct, maxNotional, maxMargin, maxBalanceUse, maxOrderRisk)
+	}
+	if !closeEnough(leverage, 3) || !closeEnough(maxLeverage, 3) {
+		t.Fatalf("leverage profile leverage=%f max=%f", leverage, maxLeverage)
+	}
+	if !signalFilter || !closeEnough(minSignal, 0.45) {
+		t.Fatalf("signal filter = %v min=%f, want true 0.45", signalFilter, minSignal)
+	}
+	if !trendFilter || trendInterval != "15m" || macroInterval != "15m" || trendFast != 8 || trendSlow != 21 || !closeEnough(trendMin, 0.02) {
+		t.Fatalf("trend profile = %v %s/%s %d/%d min=%f", trendFilter, trendInterval, macroInterval, trendFast, trendSlow, trendMin)
+	}
+}
+
+type paperProfileTestValues struct {
+	strategyID    string
+	market        string
+	interval      string
+	strategyType  string
+	fast          int
+	slow          int
+	takeProfitPct float64
+	stopLossPct   float64
+	dynamicTPSL   bool
+	takeATRMult   float64
+	stopATRMult   float64
+	minTPPct      float64
+	maxTPPct      float64
+	minSLPct      float64
+	maxSLPct      float64
+	cooldownBars  int
+	minSpreadPct  float64
+	confirmBars   int
+	atrWindow     int
+	minATRPct     float64
+	maxATRPct     float64
+	volumeWindow  int
+	minVolume     float64
+	maxExtension  float64
+	pullbackBars  int
+	pullbackTol   float64
+	feeRate       float64
+	slippageRate  float64
+	riskPct       float64
+	maxNotional   float64
+	maxMargin     float64
+	maxBalanceUse float64
+	minLiqDist    float64
+	maxOrderRisk  float64
+	maxLeverage   float64
+	leverage      float64
+	signalFilter  bool
+	minSignal     float64
+	trendFilter   bool
+	trendInterval string
+	macroInterval string
+	trendFast     int
+	trendSlow     int
+	trendMin      float64
+	maxCandleAge  time.Duration
+}
+
+func newPaperProfileTestValues() *paperProfileTestValues {
+	return &paperProfileTestValues{
+		strategyID:   "sma-paper",
+		market:       "manual",
+		interval:     "1h",
+		strategyType: "sma",
+		fast:         12,
+		slow:         48,
+	}
+}
+
+func (v *paperProfileTestValues) flags() paperProfileFlags {
+	return paperProfileFlags{
+		strategyID:    &v.strategyID,
+		market:        &v.market,
+		interval:      &v.interval,
+		strategyType:  &v.strategyType,
+		fast:          &v.fast,
+		slow:          &v.slow,
+		takeProfitPct: &v.takeProfitPct,
+		stopLossPct:   &v.stopLossPct,
+		dynamicTPSL:   &v.dynamicTPSL,
+		takeATRMult:   &v.takeATRMult,
+		stopATRMult:   &v.stopATRMult,
+		minTPPct:      &v.minTPPct,
+		maxTPPct:      &v.maxTPPct,
+		minSLPct:      &v.minSLPct,
+		maxSLPct:      &v.maxSLPct,
+		cooldownBars:  &v.cooldownBars,
+		minSpreadPct:  &v.minSpreadPct,
+		confirmBars:   &v.confirmBars,
+		atrWindow:     &v.atrWindow,
+		minATRPct:     &v.minATRPct,
+		maxATRPct:     &v.maxATRPct,
+		volumeWindow:  &v.volumeWindow,
+		minVolume:     &v.minVolume,
+		maxExtension:  &v.maxExtension,
+		pullbackBars:  &v.pullbackBars,
+		pullbackTol:   &v.pullbackTol,
+		feeRate:       &v.feeRate,
+		slippageRate:  &v.slippageRate,
+		riskPct:       &v.riskPct,
+		maxNotional:   &v.maxNotional,
+		maxMargin:     &v.maxMargin,
+		maxBalanceUse: &v.maxBalanceUse,
+		minLiqDist:    &v.minLiqDist,
+		maxOrderRisk:  &v.maxOrderRisk,
+		maxLeverage:   &v.maxLeverage,
+		leverage:      &v.leverage,
+		signalFilter:  &v.signalFilter,
+		minSignal:     &v.minSignal,
+		trendFilter:   &v.trendFilter,
+		trendInterval: &v.trendInterval,
+		macroInterval: &v.macroInterval,
+		trendFast:     &v.trendFast,
+		trendSlow:     &v.trendSlow,
+		trendMin:      &v.trendMin,
+		maxCandleAge:  &v.maxCandleAge,
+	}
+}
+
+func TestApplyPaperProfileMicroTrend1MDefaults(t *testing.T) {
+	values := newPaperProfileTestValues()
+
+	err := applyPaperProfile("1m", map[string]struct{}{}, values.flags())
+	if err != nil {
+		t.Fatalf("apply micro trend profile: %v", err)
+	}
+	for _, alias := range []string{"micro", "micro-trend-1m", "1m", "scalp-1m"} {
+		if normalizedPaperProfile(alias) != "micro-trend-1m" {
+			t.Fatalf("alias %q normalized to %q, want micro-trend-1m", alias, normalizedPaperProfile(alias))
+		}
+	}
+	if values.market != "perpetual" || values.interval != "1m" || values.strategyType != "scalp-tpsl" {
+		t.Fatalf("market=%q interval=%q strategy_type=%q, want micro trend perp 1m scalp", values.market, values.interval, values.strategyType)
+	}
+	if values.fast != 2 || values.slow != 5 {
+		t.Fatalf("windows = %d/%d, want 2/5", values.fast, values.slow)
+	}
+	if !closeEnough(values.takeProfitPct, 0.35) || !closeEnough(values.stopLossPct, 0.22) {
+		t.Fatalf("tp/sl = %f/%f, want 0.35/0.22", values.takeProfitPct, values.stopLossPct)
+	}
+	if !values.dynamicTPSL || !closeEnough(values.takeATRMult, 1.10) || !closeEnough(values.stopATRMult, 0.75) {
+		t.Fatalf("dynamic tpsl = %v multipliers=%f/%f, want true 1.10/0.75", values.dynamicTPSL, values.takeATRMult, values.stopATRMult)
+	}
+	if !closeEnough(values.minTPPct, 0.25) || !closeEnough(values.maxTPPct, 0.80) || !closeEnough(values.minSLPct, 0.15) || !closeEnough(values.maxSLPct, 0.45) {
+		t.Fatalf("dynamic tpsl bounds tp=%f/%f sl=%f/%f", values.minTPPct, values.maxTPPct, values.minSLPct, values.maxSLPct)
+	}
+	if values.cooldownBars != 0 || !closeEnough(values.minSpreadPct, 0.004) || values.confirmBars != 1 {
+		t.Fatalf("entry timing cooldown=%d spread=%f confirm=%d", values.cooldownBars, values.minSpreadPct, values.confirmBars)
+	}
+	if !closeEnough(values.minATRPct, 0.02) || !closeEnough(values.minVolume, 0.50) || !closeEnough(values.maxExtension, 0.50) {
+		t.Fatalf("entry filters atr=%f volume=%f extension=%f", values.minATRPct, values.minVolume, values.maxExtension)
+	}
+	if values.pullbackBars != 1 || !closeEnough(values.pullbackTol, 0.10) {
+		t.Fatalf("pullback = %d/%f, want 1/0.10", values.pullbackBars, values.pullbackTol)
+	}
+	if !closeEnough(values.riskPct, 0.50) || !closeEnough(values.maxNotional, 150) || !closeEnough(values.maxMargin, 45) || !closeEnough(values.maxBalanceUse, 75) || !closeEnough(values.maxOrderRisk, 0.80) {
+		t.Fatalf("risk profile risk=%f notional=%f margin=%f balance=%f order_risk=%f", values.riskPct, values.maxNotional, values.maxMargin, values.maxBalanceUse, values.maxOrderRisk)
+	}
+	if !closeEnough(values.leverage, 3) || !closeEnough(values.maxLeverage, 3) {
+		t.Fatalf("leverage profile leverage=%f max=%f", values.leverage, values.maxLeverage)
+	}
+	if !values.signalFilter || !closeEnough(values.minSignal, 0.35) {
+		t.Fatalf("signal filter = %v min=%f, want true 0.35", values.signalFilter, values.minSignal)
+	}
+	if !values.trendFilter || values.trendInterval != "5m" || values.macroInterval != "5m" || values.trendFast != 8 || values.trendSlow != 21 || !closeEnough(values.trendMin, 0.005) {
+		t.Fatalf("trend profile = %v %s/%s %d/%d min=%f", values.trendFilter, values.trendInterval, values.macroInterval, values.trendFast, values.trendSlow, values.trendMin)
+	}
+	if values.maxCandleAge != 2*time.Minute {
+		t.Fatalf("max candle age = %s, want 2m", values.maxCandleAge)
+	}
+}
+
+func TestApplyPaperProfileSmallScalpFastDefaults(t *testing.T) {
+	values := newPaperProfileTestValues()
+
+	err := applyPaperProfile("300u", map[string]struct{}{}, values.flags())
+	if err != nil {
+		t.Fatalf("apply fast small scalp profile: %v", err)
+	}
+	if normalizedPaperProfile("small-scalp-fast") != "small-scalp-fast" || normalizedPaperProfile("300u") != "small-scalp-fast" {
+		t.Fatalf("fast aliases did not normalize to small-scalp-fast")
+	}
+	if values.market != "perpetual" || values.interval != "5m" || values.strategyType != "scalp-tpsl" {
+		t.Fatalf("market=%q interval=%q strategy_type=%q, want fast small scalp perp 5m scalp", values.market, values.interval, values.strategyType)
+	}
+	if !closeEnough(values.minSpreadPct, 0.008) || !closeEnough(values.minATRPct, 0.05) || !closeEnough(values.minVolume, 0.80) {
+		t.Fatalf("entry filters spread=%f atr=%f volume=%f", values.minSpreadPct, values.minATRPct, values.minVolume)
+	}
+	if !closeEnough(values.maxExtension, 0.35) || values.pullbackBars != 2 || !closeEnough(values.pullbackTol, 0.08) {
+		t.Fatalf("entry filters extension=%f pullback=%d/%f", values.maxExtension, values.pullbackBars, values.pullbackTol)
+	}
+	if !closeEnough(values.riskPct, 0.80) || !closeEnough(values.maxMargin, 45) || !closeEnough(values.maxBalanceUse, 75) || !closeEnough(values.maxOrderRisk, 1.20) {
+		t.Fatalf("risk profile risk=%f margin=%f balance=%f order_risk=%f", values.riskPct, values.maxMargin, values.maxBalanceUse, values.maxOrderRisk)
+	}
+	if !values.signalFilter || !closeEnough(values.minSignal, 0.40) {
+		t.Fatalf("signal filter = %v min=%f, want true 0.40", values.signalFilter, values.minSignal)
+	}
+	if !values.trendFilter || values.trendInterval != "15m" || values.macroInterval != "15m" || values.trendFast != 8 || values.trendSlow != 21 || !closeEnough(values.trendMin, 0.01) {
+		t.Fatalf("trend profile = %v %s/%s %d/%d min=%f", values.trendFilter, values.trendInterval, values.macroInterval, values.trendFast, values.trendSlow, values.trendMin)
 	}
 }
 
@@ -488,6 +825,35 @@ func TestValidatePaperMarketFreshness(t *testing.T) {
 	}, now, paperRunConfig{MaxCandleAge: time.Minute, MaxMarkPriceAge: time.Minute})
 	if err == nil {
 		t.Fatal("freshness error = nil, want stale mark price")
+	}
+}
+
+func TestClosedPaperCandlesExcludeInProgressCandle(t *testing.T) {
+	start := time.Date(2026, 7, 15, 11, 30, 0, 0, time.UTC)
+	candles := make([]marketdata.Candle, 0, 3)
+	for i, closePrice := range []float64{100, 101, 102} {
+		openTime := start.Add(time.Duration(i) * 5 * time.Minute)
+		candles = append(candles, marketdata.Candle{
+			Exchange:   "onebullex",
+			MarketType: marketdata.MarketTypePerpetual,
+			Symbol:     "BTCUSDT",
+			Interval:   "5m",
+			OpenTime:   openTime,
+			CloseTime:  openTime.Add(5 * time.Minute),
+			High:       formatTestFloat(closePrice + 0.5),
+			Low:        formatTestFloat(closePrice - 0.5),
+			Close:      formatTestFloat(closePrice),
+			Volume:     "100",
+		})
+	}
+	asOf := start.Add(10*time.Minute + 15*time.Second)
+
+	closed := closedPaperCandles(candles, asOf)
+	if len(closed) != 2 {
+		t.Fatalf("closed candles = %d, want 2", len(closed))
+	}
+	if !closed[len(closed)-1].CloseTime.Equal(start.Add(10 * time.Minute)) {
+		t.Fatalf("latest closed candle close = %s", closed[len(closed)-1].CloseTime)
 	}
 }
 
@@ -599,6 +965,39 @@ func TestAssessPaperSignalBlocksBelowThreshold(t *testing.T) {
 	}
 }
 
+func TestAssessPaperSignalExplainsNoEntryBlockers(t *testing.T) {
+	start := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	candles := testFeatureCandles(start,
+		[]float64{100, 100.01, 100.02, 100.03, 100.04, 100.05, 100.06, 100.07, 100.08, 100.09, 100.10},
+		[]float64{100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 10},
+	)
+	assessment := assessPaperSignal(candles, backtestResult(0, 50, 0), paperSignal{
+		Action: strategy.SignalHold,
+	}, paperMarketSnapshot{
+		MarkPrice: 100.1,
+	}, paperRunConfig{
+		FastWindow:           3,
+		SlowWindow:           9,
+		ATRWindow:            3,
+		MinATRPct:            0.50,
+		MaxATRPct:            2,
+		VolumeWindow:         3,
+		MinVolumeRatio:       1.10,
+		MaxEntryExtensionPct: 0.5,
+		MinTrendSpreadPct:    0.05,
+	})
+	if assessment.AllowEntry {
+		t.Fatal("hold signal allowed entry, want blocked")
+	}
+	blockers, ok := assessment.Features["entry_blockers"].([]string)
+	if !ok || len(blockers) == 0 {
+		t.Fatalf("entry blockers = %#v, want non-empty []string", assessment.Features["entry_blockers"])
+	}
+	if assessment.Reason != "no_entry_signal_trend_spread_below_min" {
+		t.Fatalf("reason = %q", assessment.Reason)
+	}
+}
+
 func TestParseFundingRatePct(t *testing.T) {
 	got, err := parseFundingRatePct("0.0001")
 	if err != nil {
@@ -656,6 +1055,23 @@ func TestShouldSavePaperObservationForNewCandleAndOrders(t *testing.T) {
 	}
 	if !shouldSavePaperObservation(options, lastCandle, strategy.SignalHold, "take_profit") {
 		t.Fatal("close event observation not saved")
+	}
+}
+
+func TestPaperEntryRiskHaltDetectsConsecutiveLosses(t *testing.T) {
+	halt := paperEntryRiskHalt(paperRunConfig{MaxConsecutiveLosses: 3}, paperAccountState{ConsecutiveLosses: 3})
+	if halt.Reason != "consecutive_loss_halt" {
+		t.Fatalf("halt reason = %q, want consecutive_loss_halt", halt.Reason)
+	}
+
+	halt = paperEntryRiskHalt(paperRunConfig{Equity: 300, MaxDailyLossPct: 2}, paperAccountState{DailyRealizedPnL: -6})
+	if halt.Reason != "daily_loss_halt" {
+		t.Fatalf("halt reason = %q, want daily_loss_halt", halt.Reason)
+	}
+
+	halt = paperEntryRiskHalt(paperRunConfig{MaxConsecutiveLosses: 3}, paperAccountState{ConsecutiveLosses: 2})
+	if halt.Reason != "" {
+		t.Fatalf("halt reason = %q, want none", halt.Reason)
 	}
 }
 

@@ -40,7 +40,7 @@
 - 回测结果落库和排名报告
 - 基础风控检查：单笔风险、单币种敞口、总敞口、杠杆、日亏损、连续亏损、强平距离、资金费率
 - Dry-run 下单日志：计划订单、风控结论、风险事件落库，不触发真实交易
-- Paper trading：基于真实行情驱动本地模拟开平仓，支持 `15m + 1h` 趋势过滤、日亏损/连续亏损熔断、保本止损和 ATR 追踪止损
+- Paper trading：基于真实行情驱动本地模拟开平仓，支持 `1m` 执行信号、`5m/15m/1h` 趋势过滤、日亏损/连续亏损熔断、保本止损和 ATR 追踪止损
 - 可选真实下单：风控通过后提交 OneBullEx 订单，并记录交易所订单号；默认关闭
 - 账户/仓位/保证金快照：本地写入 balances、positions、margin_snapshots；OneBullEx 私有 API 只读同步需显式开启
 - 每日运行报告、SQLite 备份、人工 emergency halt/resume
@@ -101,16 +101,19 @@ BACKUP_PATH=./backups
 默认使用 OneBullEx 线上公开行情驱动本地 paper 模拟仓，不会提交真实订单：
 
 ```bash
+cd /Users/mac/Desktop/yoyo/gogogo
+./scripts/stop-paper-local.sh
+
 ONEBULLEX_LIVE_TRADING=false \
 SUBMIT_EXCHANGE=false \
 SYMBOL=BTCUSDT \
-PROFILE=aggressive \
-EQUITY=1000 \
+PROFILE=micro-trend-1m \
+EQUITY=300 \
 POSITION_MODEL=AGGREGATION \
 ./scripts/start-paper-local.sh
 ```
 
-该脚本会初始化数据库，按本地最新 candle 增量同步执行周期、`15m`、`1h` K 线，持续同步标记价格和资金费率，并启动 `papertrade` 与 Dashboard。默认看板地址为 `http://localhost:8082`：
+该脚本会初始化数据库，按本地最新 candle 增量同步执行周期和 profile 需要的趋势周期 K 线，持续同步标记价格和资金费率，并启动 `papertrade` 与 Dashboard。当前默认 `micro-trend-1m` 使用 `1m` 执行信号和 `5m EMA8/21` 趋势硬过滤。默认看板地址为 `http://localhost:8082`：
 
 ```bash
 ./scripts/status-paper-local.sh
@@ -126,11 +129,12 @@ tail -f .runtime/logs/papertrade.log
 ONEBULLEX_LIVE_TRADING=true \
 SUBMIT_EXCHANGE=true \
 SYMBOL=BTCUSDT \
-PROFILE=aggressive \
-EQUITY=1000 \
+PROFILE=micro-trend-1m \
 POSITION_MODEL=AGGREGATION \
 ./scripts/start-paper-local.sh
 ```
+
+实盘提交模式会优先使用 `LIVE_ACCOUNT=live-main` 最新真实 USDT 快照做风控资金，不会把本地 `EQUITY=300` 模拟余额写到 `live-main`；真实下单时 `EQUITY` 不作为实盘资金来源。
 
 如需用真实 key 只读同步真实账户、但策略仍 dry-run，不传 `SUBMIT_EXCHANGE=true` 即可；默认 paper 账户会使用 `paper-live-main`，真实账户快照使用 `LIVE_ACCOUNT=live-main`。
 
@@ -461,7 +465,7 @@ go run ./cmd/accountsnapshot \
 
 `-watch` 模式下会继续每轮结算持仓和止盈止损，但观望信号/账户快照默认按 `-persist-interval` 节流入库，完整回测记录默认按 `-backtest-interval` 节流入库，避免每 15 秒写一组重复 run/signal/backtest。
 
-默认运行当前短线 `scalp-tpsl` 策略，周期为 `5m`，止盈止损按 ATR 动态计算。高周期趋势过滤默认开启，要求 `15m EMA20/60` 与 `1h EMA20/60` 同向才允许新开仓；浮盈达到 `1R` 后启用保本止损，达到 `1.5R` 后按 `1.2 * ATR` 追踪止损。日亏损达到 `2%` 或连续亏损达到 `3` 次时停止新开仓。如需只跑基线对比，可显式传 `-strategy-type sma`。
+直接运行 `papertrade` 且不传 `-profile` 时，使用当前短线 `scalp-tpsl` 基础参数：周期为 `5m`，止盈止损按 ATR 动态计算，高周期趋势过滤要求 `15m EMA20/60` 与 `1h EMA20/60` 同向才允许新开仓。一键启动脚本默认传 `PROFILE=micro-trend-1m`，面向 300U 左右小资金的 1 分钟级别短线趋势；如需只跑基线对比，可显式传 `-strategy-type sma`。
 
 ```bash
 go run ./cmd/papertrade \
@@ -492,9 +496,9 @@ go run ./cmd/papertrade \
   -quantity 0.01
 ```
 
-启用趋势过滤前需同步对应的 `15m` 和 `1h` K 线；一键启动脚本会自动完成这些同步。单独调试且尚无高周期数据时，可临时传 `-trend-filter=false`。
+启用趋势过滤前需同步对应的趋势周期 K 线；一键启动脚本会按 profile 自动完成同步。`micro-trend-1m` 会同步 `1m` 执行 K 线和 `5m` 趋势 K 线；`small-scalp-fast` / `small-scalp` 只需要 `15m`，基础/`aggressive` 档默认需要 `15m` 和 `1h`。单独调试且尚无高周期数据时，可临时传 `-trend-filter=false`。
 
-短线 TP/SL 版本会用更短均线窗口提高交易频次，并把按 ATR 计算的止盈价、止损价写入 `orders`。开仓前还会计算 `signal_score`，低于 `-min-signal-score` 的候选开仓会被过滤成观望，并把候选动作、特征和过滤原因写入 `signals.raw_features_json`。小资金想更激进时优先使用 `-profile aggressive`，该档会使用 OneBullEx 支持的 `5m` 周期且评分阈值为 `0.50`：
+短线 TP/SL 版本会用更短均线窗口提高交易频次，并把按 ATR 计算的止盈价、止损价写入 `orders`。开仓前还会计算 `signal_score`，低于 `-min-signal-score` 的候选开仓会被过滤成观望，并把候选动作、特征和过滤原因写入 `signals.raw_features_json`。当前 300U 左右小资金优先使用 `-profile micro-trend-1m`，该档在保留 `5m EMA8/21` 趋势硬过滤的前提下，使用 `1m` 执行信号、`fast=2/slow=5`、`min_signal_score=0.35`、`min_volume_ratio=0.50` 和更低 TP/SL 区间来提高短线触发频率：
 
 ```bash
 go run ./cmd/papertrade \
@@ -504,20 +508,20 @@ go run ./cmd/papertrade \
   -exchange onebullex \
   -market perpetual \
   -symbol BTCUSDT \
-  -profile aggressive \
+  -profile micro-trend-1m \
   -start 2026-07-11T00:00:00Z \
   -end 2026-07-12T00:00:00Z \
   -equity 10000 \
   -quantity 0.01
 ```
 
-持续运行短线 paper 策略时开启 `-watch`。默认不会向交易所提交真实订单，只会用真实行情驱动本地模拟下单和结算。只有显式增加 `-submit-exchange=true` 且 `ONEBULLEX_LIVE_TRADING=true` 时，风控通过的开仓/平仓订单才会调用 OneBullEx 下单 API，并把交易所订单号回写到 `orders.exchange_order_id`；开仓单会同步提交 `triggerProfitPrice` 和 `triggerStopPrice` 作为交易所原生保护字段。前期小资金可以用 `-profile aggressive` 切到更主动的合约短线档，手动传入的参数会覆盖 profile 默认值：
+持续运行短线 paper 策略时开启 `-watch`。默认不会向交易所提交真实订单，只会用真实行情驱动本地模拟下单和结算。只有显式增加 `-submit-exchange=true` 且 `ONEBULLEX_LIVE_TRADING=true` 时，风控通过的开仓/平仓订单才会调用 OneBullEx 下单 API，并把交易所订单号回写到 `orders.exchange_order_id`；开仓单会同步提交 `triggerProfitPrice` 和 `triggerStopPrice` 作为交易所原生保护字段。前期小资金可以用 `-profile micro-trend-1m` 切到更主动但单笔占用更受控的 1m 合约短线档，手动传入的参数会覆盖 profile 默认值：
 
 ```bash
 go run ./cmd/papertrade \
   -dsn data.db \
   -account paper \
-  -profile aggressive \
+  -profile micro-trend-1m \
   -symbol BTCUSDT \
   -equity 1000 \
   -watch \

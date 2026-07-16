@@ -308,6 +308,84 @@ func TestTablePreviewRejectsUnsupportedTable(t *testing.T) {
 	}
 }
 
+func TestLoadExecutionStatsUsesLatestStrategy(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if err := storage.InitSQLiteSchema(ctx, db); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+	now := time.Date(2026, 7, 16, 1, 0, 0, 0, time.UTC)
+	_, err = db.ExecContext(ctx, `
+INSERT INTO signals (
+	strategy_id, exchange, market_type, symbol, signal_time, action, confidence, created_at
+) VALUES
+	('old-strategy', 'onebullex', 'perpetual', 'BTCUSDT', ?, 'buy', 0.8, ?),
+	('current-strategy', 'onebullex', 'perpetual', 'BTCUSDT', ?, 'buy', 0.8, ?),
+	('current-strategy', 'onebullex', 'perpetual', 'BTCUSDT', ?, 'hold', 0.2, ?);
+
+INSERT INTO paper_positions (
+	account_id, strategy_id, exchange, market_type, symbol, position_side,
+	quantity, entry_price, mark_price, status, opened_at, updated_at
+) VALUES
+	('paper', 'old-strategy', 'onebullex', 'perpetual', 'BTCUSDT', 'long', 0.01, 60000, 60100, 'closed', ?, ?),
+	('paper', 'current-strategy', 'onebullex', 'perpetual', 'BTCUSDT', 'long', 0.01, 60000, 60100, 'closed', ?, ?),
+	('paper', 'current-strategy', 'onebullex', 'perpetual', 'BTCUSDT', 'short', 0.01, 60200, 60100, 'open', ?, ?);
+
+INSERT INTO orders (
+	account_id, strategy_id, exchange, market_type, symbol, client_order_id,
+	side, order_type, price, quantity, status, risk_decision, risk_reason, created_at, updated_at
+) VALUES
+	('paper', 'old-strategy', 'onebullex', 'perpetual', 'BTCUSDT', 'old-1', 'buy', 'market', 60000, 0.01, 'risk_halted', 'halt', 'old', ?, ?),
+	('paper', 'current-strategy', 'onebullex', 'perpetual', 'BTCUSDT', 'cur-1', 'buy', 'market', 60000, 0.01, 'dry_run_accepted', 'allow', '', ?, ?),
+	('paper', 'current-strategy', 'onebullex', 'perpetual', 'BTCUSDT', 'cur-2', 'sell', 'market', 60100, 0.01, 'filled', 'allow', '', ?, ?),
+	('paper', 'current-strategy', 'onebullex', 'perpetual', 'BTCUSDT', 'cur-3', 'buy', 'market', 60200, 0.01, 'risk_halted', 'halt', 'consecutive_loss_halt', ?, ?),
+	('paper', 'current-strategy', 'onebullex', 'perpetual', 'BTCUSDT', 'cur-4', 'buy', 'market', 60300, 0.01, 'risk_rejected', 'reject', 'insufficient_margin', ?, ?);
+`, now.Add(-time.Hour), now.Add(-time.Hour),
+		now, now,
+		now.Add(time.Minute), now.Add(time.Minute),
+		now, now,
+		now, now,
+		now, now,
+		now, now,
+		now, now,
+		now, now,
+		now, now,
+		now, now)
+	if err != nil {
+		t.Fatalf("seed execution stats: %v", err)
+	}
+
+	stats, err := NewServer(db, "").loadExecutionStats(ctx, dashboardQuery{
+		Exchange:   "onebullex",
+		MarketType: "perpetual",
+		Symbol:     "BTCUSDT",
+	})
+	if err != nil {
+		t.Fatalf("load execution stats: %v", err)
+	}
+	if stats.PaperPositions != 2 || stats.PaperClosed != 1 || stats.PaperOpen != 1 {
+		t.Fatalf("paper stats = %+v, want positions=2 closed=1 open=1", stats)
+	}
+	if stats.AcceptedOrders != 2 || stats.RiskHaltedOrders != 1 || stats.RiskRejectedOrders != 1 || stats.EntrySignals != 1 {
+		t.Fatalf("order/signal stats = %+v, want accepted=2 halted=1 rejected=1 entry=1", stats)
+	}
+}
+
+func TestParseRuntimeReadyFields(t *testing.T) {
+	fields := parseRuntimeReadyFields("2026-07-16T01:00:00Z ready RUN_ID=123 ONEBULLEX_LIVE_TRADING=true SUBMIT_EXCHANGE=false SYMBOL=BTCUSDT ACCOUNT=paper-live-main LIVE_ACCOUNT=live-main")
+	if fields["ACCOUNT"] != "paper-live-main" {
+		t.Fatalf("ACCOUNT = %q", fields["ACCOUNT"])
+	}
+	if fields["ONEBULLEX_LIVE_TRADING"] != "true" || fields["SUBMIT_EXCHANGE"] != "false" {
+		t.Fatalf("runtime flags = %#v", fields)
+	}
+}
+
 func seedDashboardData(t *testing.T, db *sql.DB) {
 	t.Helper()
 	now := time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)

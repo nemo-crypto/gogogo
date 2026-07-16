@@ -14,6 +14,7 @@ import (
 	"gogogo/internal/strategy"
 	"log"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -117,6 +118,15 @@ type paperOpenRequest struct {
 	FeeRate         float64
 	SlippageRate    float64
 	OpenedAt        time.Time
+	SaveSnapshots   bool
+}
+
+type liveAccountBalanceOverride struct {
+	Applied          bool
+	Source           string
+	Equity           float64
+	AvailableBalance float64
+	SnapshotTime     time.Time
 }
 
 func settlePaperPosition(ctx context.Context, repo *portfolio.SQLiteRepository, request paperSettleRequest) (paperAccountState, error) {
@@ -288,23 +298,70 @@ func openPaperPosition(ctx context.Context, repo *portfolio.SQLiteRepository, re
 		return portfolio.PaperPositionRecord{}, fmt.Errorf("reload opened paper position %d: %w", id, err)
 	}
 	openPnL := paperPositionNetPnL(position, request.EntryPrice, request.FeeRate, request.SlippageRate)
-	if err := savePaperAccountSnapshots(ctx, repo, paperSnapshotRequest{
-		AccountID:      request.AccountID,
-		Exchange:       request.Exchange,
-		MarketType:     request.MarketType,
-		Symbol:         request.Symbol,
-		Equity:         request.Equity + openPnL,
-		Leverage:       request.Leverage,
-		MaintMarginPct: request.MaintMarginPct,
-		Position:       position,
-		MarkPrice:      request.EntryPrice,
-		SnapshotTime:   request.OpenedAt,
-		FeeRate:        request.FeeRate,
-		SlippageRate:   request.SlippageRate,
-	}); err != nil {
-		return portfolio.PaperPositionRecord{}, err
+	if request.SaveSnapshots {
+		if err := savePaperAccountSnapshots(ctx, repo, paperSnapshotRequest{
+			AccountID:      request.AccountID,
+			Exchange:       request.Exchange,
+			MarketType:     request.MarketType,
+			Symbol:         request.Symbol,
+			Equity:         request.Equity + openPnL,
+			Leverage:       request.Leverage,
+			MaintMarginPct: request.MaintMarginPct,
+			Position:       position,
+			MarkPrice:      request.EntryPrice,
+			SnapshotTime:   request.OpenedAt,
+			FeeRate:        request.FeeRate,
+			SlippageRate:   request.SlippageRate,
+		}); err != nil {
+			return portfolio.PaperPositionRecord{}, err
+		}
 	}
 	return position, nil
+}
+
+func shouldSavePaperAccountSnapshots(config paperRunConfig) bool {
+	return !config.SubmitExchange
+}
+
+func maybeApplyLiveAccountBalance(ctx context.Context, repo *portfolio.SQLiteRepository, config paperRunConfig, state *paperAccountState) (liveAccountBalanceOverride, error) {
+	if !config.SubmitExchange {
+		return liveAccountBalanceOverride{Source: "paper_equity"}, nil
+	}
+	balance, err := repo.LatestLiveBalanceSnapshot(ctx, config.AccountID, config.Exchange, "USDT")
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return liveAccountBalanceOverride{}, fmt.Errorf("live submit requires a recent live USDT balance snapshot for account %s", config.AccountID)
+		}
+		return liveAccountBalanceOverride{}, fmt.Errorf("load live USDT balance snapshot: %w", err)
+	}
+	equity := balance.Total
+	if equity <= 0 {
+		equity = balance.USDValue
+	}
+	available := parseLiveBalanceAmount(balance.AvailableBalance)
+	if available <= 0 {
+		available = balance.Free
+	}
+	if equity <= 0 || available <= 0 {
+		return liveAccountBalanceOverride{}, fmt.Errorf("live USDT balance snapshot is not usable: equity=%.8f available=%.8f", equity, available)
+	}
+	state.Equity = equity
+	state.AvailableBalance = available
+	return liveAccountBalanceOverride{
+		Applied:          true,
+		Source:           "live_balance_snapshot",
+		Equity:           equity,
+		AvailableBalance: available,
+		SnapshotTime:     balance.SnapshotTime,
+	}, nil
+}
+
+func parseLiveBalanceAmount(value string) float64 {
+	parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil || parsed < 0 || math.IsNaN(parsed) || math.IsInf(parsed, 0) {
+		return 0
+	}
+	return parsed
 }
 
 func recordPaperCloseOrder(ctx context.Context, repo *execution.SQLiteRepository, config paperRunConfig, state paperAccountState, latestPrice float64, latestTime time.Time) (execution.OrderRecord, error) {

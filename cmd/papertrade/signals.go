@@ -209,7 +209,7 @@ func listPaperTrendCandles(ctx context.Context, repo *marketdata.SQLiteRepositor
 	if err != nil {
 		return nil, fmt.Errorf("list trend candles %s: %w", interval, err)
 	}
-	return candles, nil
+	return closedPaperCandles(candles, config.End), nil
 }
 
 func paperTrendLookbackStart(end time.Time, interval string, slowWindow int) (time.Time, error) {
@@ -399,10 +399,18 @@ func trendRegimeBlockReason(regime paperTrendRegime, action strategy.SignalActio
 func assessPaperSignal(candles []marketdata.Candle, result backtest.Result, signal paperSignal, snapshot paperMarketSnapshot, config paperRunConfig) paperSignalAssessment {
 	features, values, ok := paperSignalFeatures(candles, signal, snapshot, config)
 	if !isEntryAction(signal.Action) {
+		reason := "no_entry_signal"
+		if ok {
+			blockers := paperEntryBlockers(values, config)
+			features["entry_blockers"] = blockers
+			if len(blockers) > 0 {
+				reason = "no_entry_signal_" + blockers[0]
+			}
+		}
 		return paperSignalAssessment{
 			Score:      0,
 			AllowEntry: false,
-			Reason:     "no_entry_signal",
+			Reason:     reason,
 			Features:   features,
 		}
 	}
@@ -424,6 +432,7 @@ func assessPaperSignal(candles []marketdata.Candle, result backtest.Result, sign
 	score += paperMarkBasisScore(values.MarkBasisPct, values.HasMarkBasis)
 	score += paperBacktestScore(result)
 	score = clamp01(score)
+	features["entry_blockers"] = paperEntryBlockers(values, config)
 
 	allowed := !config.SignalFilterEnabled || score >= config.MinSignalScore
 	reason := "score_pass"
@@ -499,6 +508,34 @@ func paperSignalFeatures(candles []marketdata.Candle, signal paperSignal, snapsh
 	features["mark_basis_pct"] = nullableFeature(values.MarkBasisPct, values.HasMarkBasis)
 	features["direction"] = signal.PositionSide
 	return features, values, true
+}
+
+func paperEntryBlockers(values paperSignalFeatureValues, config paperRunConfig) []string {
+	blockers := make([]string, 0, 4)
+	if config.MinTrendSpreadPct > 0 && values.TrendSpreadPct < config.MinTrendSpreadPct {
+		blockers = append(blockers, "trend_spread_below_min")
+	}
+	if values.HasATR {
+		if config.MinATRPct > 0 && values.ATRPct < config.MinATRPct {
+			blockers = append(blockers, "atr_below_min")
+		}
+		if config.MaxATRPct > 0 && values.ATRPct > config.MaxATRPct {
+			blockers = append(blockers, "atr_above_max")
+		}
+	} else if config.ATRWindow > 0 && (config.MinATRPct > 0 || config.MaxATRPct > 0) {
+		blockers = append(blockers, "atr_unavailable")
+	}
+	if values.HasVolume {
+		if config.MinVolumeRatio > 0 && values.VolumeRatio < config.MinVolumeRatio {
+			blockers = append(blockers, "volume_below_min")
+		}
+	} else if config.VolumeWindow > 0 && config.MinVolumeRatio > 0 {
+		blockers = append(blockers, "volume_unavailable")
+	}
+	if config.MaxEntryExtensionPct > 0 && values.EntryExtensionPct > config.MaxEntryExtensionPct {
+		blockers = append(blockers, "entry_extension_above_max")
+	}
+	return blockers
 }
 
 func nullableFeature(value float64, ok bool) any {

@@ -49,7 +49,7 @@ if [ -z "${ACCOUNT:-}" ]; then
   fi
 fi
 export ACCOUNT
-export PROFILE="${PROFILE:-aggressive}"
+export PROFILE="${PROFILE:-micro-trend-1m}"
 export EQUITY="${EQUITY:-1000}"
 export POSITION_MODEL="${POSITION_MODEL:-}"
 export HTTP_ADDR

@@ -60,6 +60,39 @@ func latestPaperMarketSnapshot(ctx context.Context, repo *marketdata.SQLiteRepos
 	return snapshot, nil
 }
 
+func closedPaperCandles(candles []marketdata.Candle, asOf time.Time) []marketdata.Candle {
+	if len(candles) == 0 {
+		return nil
+	}
+	if asOf.IsZero() {
+		asOf = time.Now().UTC()
+	}
+	asOf = asOf.UTC()
+	closed := make([]marketdata.Candle, 0, len(candles))
+	for _, candle := range candles {
+		closeTime := paperCandleCloseTime(candle)
+		if closeTime.IsZero() || closeTime.After(asOf) {
+			continue
+		}
+		closed = append(closed, candle)
+	}
+	return closed
+}
+
+func paperCandleCloseTime(candle marketdata.Candle) time.Time {
+	if !candle.CloseTime.IsZero() {
+		return candle.CloseTime.UTC()
+	}
+	if candle.OpenTime.IsZero() {
+		return time.Time{}
+	}
+	step, err := marketdata.IntervalDuration(candle.Interval)
+	if err != nil {
+		return candle.OpenTime.UTC()
+	}
+	return candle.OpenTime.UTC().Add(step)
+}
+
 func validatePaperMarketFreshness(snapshot paperMarketSnapshot, now time.Time, config paperRunConfig) error {
 	candleAgeLimit := config.MaxCandleAge
 	markAgeLimit := config.MaxMarkPriceAge
@@ -101,10 +134,7 @@ func latestCandlePrice(candles []marketdata.Candle) (float64, time.Time, error) 
 	if err != nil {
 		return 0, time.Time{}, err
 	}
-	eventTime := last.CloseTime
-	if eventTime.IsZero() {
-		eventTime = last.OpenTime
-	}
+	eventTime := paperCandleCloseTime(last)
 	return price, eventTime, nil
 }
 

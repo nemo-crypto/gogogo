@@ -73,7 +73,7 @@ func run() error {
 		dsn            = flag.String("dsn", env("DATABASE_DSN", "data.db"), "sqlite database path")
 		accountID      = flag.String("account", "paper", "paper account id")
 		strategyID     = flag.String("strategy", defaultPaperStrategyID, "strategy id")
-		profile        = flag.String("profile", "", "paper strategy profile: aggressive or empty/manual")
+		profile        = flag.String("profile", "", "paper strategy profile: micro-trend-1m, small-scalp-fast, small-scalp, aggressive or empty/manual")
 		exchange       = flag.String("exchange", env("EXCHANGE_NAME", onebullex.ExchangeName), "exchange")
 		market         = flag.String("market", "perpetual", "market type")
 		positionModel  = flag.String("position-model", "", "exchange position model: AGGREGATION for one-way or DISAGGREGATION for hedge")
@@ -187,6 +187,13 @@ func run() error {
 		leverage:      leverage,
 		signalFilter:  signalFilter,
 		minSignal:     minSignal,
+		trendFilter:   trendFilter,
+		trendInterval: trendInterval,
+		macroInterval: macroInterval,
+		trendFast:     trendFast,
+		trendSlow:     trendSlow,
+		trendMin:      trendMinSpread,
+		maxCandleAge:  maxCandleAge,
 	}); err != nil {
 		return err
 	}

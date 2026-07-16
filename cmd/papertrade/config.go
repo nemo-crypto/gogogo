@@ -46,6 +46,13 @@ type paperProfileFlags struct {
 	leverage      *float64
 	signalFilter  *bool
 	minSignal     *float64
+	trendFilter   *bool
+	trendInterval *string
+	macroInterval *string
+	trendFast     *int
+	trendSlow     *int
+	trendMin      *float64
+	maxCandleAge  *time.Duration
 }
 
 func visitedFlagNames() map[string]struct{} {
@@ -99,18 +106,149 @@ func applyPaperProfile(profile string, visited map[string]struct{}, flags paperP
 		setFloatFlag(visited, "leverage", flags.leverage, 3)
 		setBoolFlag(visited, "signal-filter", flags.signalFilter, true)
 		setFloatFlag(visited, "min-signal-score", flags.minSignal, 0.50)
+		setBoolFlag(visited, "trend-filter", flags.trendFilter, true)
+		setStringFlag(visited, "trend-interval", flags.trendInterval, defaultPaperTrendInterval)
+		setStringFlag(visited, "macro-trend-interval", flags.macroInterval, defaultPaperMacroInterval)
+		setIntFlag(visited, "trend-fast", flags.trendFast, defaultPaperTrendFastWindow)
+		setIntFlag(visited, "trend-slow", flags.trendSlow, defaultPaperTrendSlowWindow)
+		setFloatFlag(visited, "trend-min-spread-pct", flags.trendMin, defaultPaperTrendMinSpread)
+		return nil
+	case "small-scalp":
+		applySmallScalpProfile(visited, flags, false)
+		return nil
+	case "small-scalp-fast":
+		applySmallScalpProfile(visited, flags, true)
+		return nil
+	case "micro-trend-1m":
+		applyMicroTrend1MProfile(visited, flags)
 		return nil
 	default:
 		return fmt.Errorf("unsupported paper profile %q", profile)
 	}
 }
 
+func applyMicroTrend1MProfile(visited map[string]struct{}, flags paperProfileFlags) {
+	setStringFlag(visited, "strategy", flags.strategyID, defaultPaperStrategyID)
+	setStringFlag(visited, "market", flags.market, "perpetual")
+	setStringFlag(visited, "interval", flags.interval, "1m")
+	setStringFlag(visited, "strategy-type", flags.strategyType, "scalp-tpsl")
+	setIntFlag(visited, "fast", flags.fast, 2)
+	setIntFlag(visited, "slow", flags.slow, 5)
+	setFloatFlag(visited, "take-profit-pct", flags.takeProfitPct, 0.35)
+	setFloatFlag(visited, "stop-loss-pct", flags.stopLossPct, 0.22)
+	setBoolFlag(visited, "dynamic-tpsl", flags.dynamicTPSL, true)
+	setFloatFlag(visited, "take-profit-atr-mult", flags.takeATRMult, 1.10)
+	setFloatFlag(visited, "stop-loss-atr-mult", flags.stopATRMult, 0.75)
+	setFloatFlag(visited, "min-take-profit-pct", flags.minTPPct, 0.25)
+	setFloatFlag(visited, "max-take-profit-pct", flags.maxTPPct, 0.80)
+	setFloatFlag(visited, "min-stop-loss-pct", flags.minSLPct, 0.15)
+	setFloatFlag(visited, "max-stop-loss-pct", flags.maxSLPct, 0.45)
+	setIntFlag(visited, "cooldown-bars", flags.cooldownBars, 0)
+	setFloatFlag(visited, "min-trend-spread-pct", flags.minSpreadPct, 0.004)
+	setIntFlag(visited, "confirm-bars", flags.confirmBars, 1)
+	setIntFlag(visited, "atr-window", flags.atrWindow, defaultPaperATRWindow)
+	setFloatFlag(visited, "min-atr-pct", flags.minATRPct, 0.02)
+	setFloatFlag(visited, "max-atr-pct", flags.maxATRPct, defaultPaperMaxATRPct)
+	setIntFlag(visited, "volume-window", flags.volumeWindow, defaultPaperVolumeWindow)
+	setFloatFlag(visited, "min-volume-ratio", flags.minVolume, 0.50)
+	setFloatFlag(visited, "max-entry-extension-pct", flags.maxExtension, 0.50)
+	setIntFlag(visited, "pullback-lookback", flags.pullbackBars, 1)
+	setFloatFlag(visited, "pullback-tolerance-pct", flags.pullbackTol, 0.10)
+	setFloatFlag(visited, "fee-rate", flags.feeRate, defaultPaperFeeRate)
+	setFloatFlag(visited, "slippage-rate", flags.slippageRate, defaultPaperSlippageRate)
+	setFloatFlag(visited, "risk-pct", flags.riskPct, 0.50)
+	setFloatFlag(visited, "max-notional-pct", flags.maxNotional, 150)
+	setFloatFlag(visited, "max-margin-pct", flags.maxMargin, 45)
+	setFloatFlag(visited, "max-balance-use-pct", flags.maxBalanceUse, 75)
+	setFloatFlag(visited, "min-liquidation-distance-pct", flags.minLiqDist, 15)
+	setFloatFlag(visited, "max-order-risk-pct", flags.maxOrderRisk, 0.80)
+	setFloatFlag(visited, "max-leverage", flags.maxLeverage, 3)
+	setFloatFlag(visited, "leverage", flags.leverage, 3)
+	setBoolFlag(visited, "signal-filter", flags.signalFilter, true)
+	setFloatFlag(visited, "min-signal-score", flags.minSignal, 0.35)
+	setBoolFlag(visited, "trend-filter", flags.trendFilter, true)
+	setStringFlag(visited, "trend-interval", flags.trendInterval, "5m")
+	setStringFlag(visited, "macro-trend-interval", flags.macroInterval, "5m")
+	setIntFlag(visited, "trend-fast", flags.trendFast, 8)
+	setIntFlag(visited, "trend-slow", flags.trendSlow, 21)
+	setFloatFlag(visited, "trend-min-spread-pct", flags.trendMin, 0.005)
+	setDurationFlag(visited, "max-candle-age", flags.maxCandleAge, 2*time.Minute)
+}
+
+func applySmallScalpProfile(visited map[string]struct{}, flags paperProfileFlags, fastMode bool) {
+	minSpreadPct := 0.015
+	minVolumeRatio := 1.00
+	maxEntryExtensionPct := 0.22
+	pullbackLookback := 3
+	minSignalScore := 0.45
+	trendMinSpreadPct := 0.02
+	if fastMode {
+		minSpreadPct = 0.008
+		minVolumeRatio = 0.80
+		maxEntryExtensionPct = 0.35
+		pullbackLookback = 2
+		minSignalScore = 0.40
+		trendMinSpreadPct = 0.01
+	}
+
+	setStringFlag(visited, "strategy", flags.strategyID, defaultPaperStrategyID)
+	setStringFlag(visited, "market", flags.market, "perpetual")
+	setStringFlag(visited, "interval", flags.interval, "5m")
+	setStringFlag(visited, "strategy-type", flags.strategyType, "scalp-tpsl")
+	setIntFlag(visited, "fast", flags.fast, defaultPaperFastWindow)
+	setIntFlag(visited, "slow", flags.slow, defaultPaperSlowWindow)
+	setFloatFlag(visited, "take-profit-pct", flags.takeProfitPct, 0.65)
+	setFloatFlag(visited, "stop-loss-pct", flags.stopLossPct, 0.40)
+	setBoolFlag(visited, "dynamic-tpsl", flags.dynamicTPSL, true)
+	setFloatFlag(visited, "take-profit-atr-mult", flags.takeATRMult, 1.35)
+	setFloatFlag(visited, "stop-loss-atr-mult", flags.stopATRMult, 0.90)
+	setFloatFlag(visited, "min-take-profit-pct", flags.minTPPct, 0.45)
+	setFloatFlag(visited, "max-take-profit-pct", flags.maxTPPct, 1.20)
+	setFloatFlag(visited, "min-stop-loss-pct", flags.minSLPct, 0.25)
+	setFloatFlag(visited, "max-stop-loss-pct", flags.maxSLPct, 0.65)
+	setIntFlag(visited, "cooldown-bars", flags.cooldownBars, defaultPaperCooldownBars)
+	setFloatFlag(visited, "min-trend-spread-pct", flags.minSpreadPct, minSpreadPct)
+	setIntFlag(visited, "confirm-bars", flags.confirmBars, 1)
+	setIntFlag(visited, "atr-window", flags.atrWindow, defaultPaperATRWindow)
+	setFloatFlag(visited, "min-atr-pct", flags.minATRPct, 0.05)
+	setFloatFlag(visited, "max-atr-pct", flags.maxATRPct, defaultPaperMaxATRPct)
+	setIntFlag(visited, "volume-window", flags.volumeWindow, defaultPaperVolumeWindow)
+	setFloatFlag(visited, "min-volume-ratio", flags.minVolume, minVolumeRatio)
+	setFloatFlag(visited, "max-entry-extension-pct", flags.maxExtension, maxEntryExtensionPct)
+	setIntFlag(visited, "pullback-lookback", flags.pullbackBars, pullbackLookback)
+	setFloatFlag(visited, "pullback-tolerance-pct", flags.pullbackTol, 0.08)
+	setFloatFlag(visited, "fee-rate", flags.feeRate, defaultPaperFeeRate)
+	setFloatFlag(visited, "slippage-rate", flags.slippageRate, defaultPaperSlippageRate)
+	setFloatFlag(visited, "risk-pct", flags.riskPct, 0.80)
+	setFloatFlag(visited, "max-notional-pct", flags.maxNotional, 150)
+	setFloatFlag(visited, "max-margin-pct", flags.maxMargin, 45)
+	setFloatFlag(visited, "max-balance-use-pct", flags.maxBalanceUse, 75)
+	setFloatFlag(visited, "min-liquidation-distance-pct", flags.minLiqDist, 15)
+	setFloatFlag(visited, "max-order-risk-pct", flags.maxOrderRisk, 1.20)
+	setFloatFlag(visited, "max-leverage", flags.maxLeverage, 3)
+	setFloatFlag(visited, "leverage", flags.leverage, 3)
+	setBoolFlag(visited, "signal-filter", flags.signalFilter, true)
+	setFloatFlag(visited, "min-signal-score", flags.minSignal, minSignalScore)
+	setBoolFlag(visited, "trend-filter", flags.trendFilter, true)
+	setStringFlag(visited, "trend-interval", flags.trendInterval, "15m")
+	setStringFlag(visited, "macro-trend-interval", flags.macroInterval, "15m")
+	setIntFlag(visited, "trend-fast", flags.trendFast, 8)
+	setIntFlag(visited, "trend-slow", flags.trendSlow, 21)
+	setFloatFlag(visited, "trend-min-spread-pct", flags.trendMin, trendMinSpreadPct)
+}
+
 func normalizedPaperProfile(profile string) string {
 	switch strings.ToLower(strings.TrimSpace(profile)) {
 	case "", "manual", "none", "default":
 		return ""
-	case "aggressive", "small-aggressive", "small_aggressive", "small":
+	case "aggressive", "small-aggressive", "small_aggressive":
 		return "aggressive"
+	case "small", "small-scalp", "small_scalp", "small-capital", "small_capital", "micro-scalp", "micro_scalp":
+		return "small-scalp"
+	case "small-scalp-fast", "small_scalp_fast", "small-fast", "small_fast", "fast-scalp", "fast_scalp", "micro-scalp-fast", "micro_scalp_fast", "300u", "300u-fast", "300u_fast":
+		return "small-scalp-fast"
+	case "micro", "micro-trend", "micro_trend", "micro-trend-1m", "micro_trend_1m", "micro-1m", "micro_1m", "one-min", "one_min", "one-minute", "one_minute", "1m", "1m-scalp", "1m_scalp", "scalp-1m", "scalp_1m", "minute-scalp", "minute_scalp":
+		return "micro-trend-1m"
 	default:
 		return strings.ToLower(strings.TrimSpace(profile))
 	}
@@ -135,6 +273,12 @@ func setFloatFlag(visited map[string]struct{}, name string, target *float64, val
 }
 
 func setBoolFlag(visited map[string]struct{}, name string, target *bool, value bool) {
+	if _, ok := visited[name]; !ok {
+		*target = value
+	}
+}
+
+func setDurationFlag(visited map[string]struct{}, name string, target *time.Duration, value time.Duration) {
 	if _, ok := visited[name]; !ok {
 		*target = value
 	}

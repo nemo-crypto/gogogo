@@ -12,6 +12,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -174,6 +175,7 @@ type Data struct {
 	Backtests            []BacktestRun         `json:"backtests"`
 	CandleSnapshots      []CandleSnapshot      `json:"candle_snapshots"`
 	Orders               []OrderRecord         `json:"orders"`
+	ExecutionStats       ExecutionStats        `json:"execution_stats"`
 	RiskEvents           []RiskEvent           `json:"risk_events"`
 	Balances             []BalanceSnapshot     `json:"balances"`
 	Positions            []PositionSnapshot    `json:"positions"`
@@ -197,8 +199,14 @@ type TablePreview struct {
 }
 
 type RuntimeState struct {
-	Halted   bool   `json:"halted"`
-	HaltFile string `json:"halt_file"`
+	Halted         bool   `json:"halted"`
+	HaltFile       string `json:"halt_file"`
+	ReadyFile      string `json:"ready_file,omitempty"`
+	AccountID      string `json:"account_id,omitempty"`
+	LiveAccountID  string `json:"live_account_id,omitempty"`
+	LiveTrading    bool   `json:"live_trading"`
+	SubmitExchange bool   `json:"submit_exchange"`
+	Symbol         string `json:"symbol,omitempty"`
 }
 
 type MarketCoverage struct {
@@ -273,6 +281,16 @@ type OrderRecord struct {
 	RiskDecision    string    `json:"risk_decision"`
 	RiskReason      string    `json:"risk_reason"`
 	CreatedAt       time.Time `json:"created_at"`
+}
+
+type ExecutionStats struct {
+	PaperPositions     int64 `json:"paper_positions"`
+	PaperClosed        int64 `json:"paper_closed"`
+	PaperOpen          int64 `json:"paper_open"`
+	AcceptedOrders     int64 `json:"accepted_orders"`
+	RiskHaltedOrders   int64 `json:"risk_halted_orders"`
+	RiskRejectedOrders int64 `json:"risk_rejected_orders"`
+	EntrySignals       int64 `json:"entry_signals"`
 }
 
 type RiskEvent struct {
@@ -386,11 +404,8 @@ func (s *Server) collect(ctx context.Context, query dashboardQuery) (Data, error
 	data := Data{
 		GeneratedAt: time.Now().UTC(),
 		Query:       query,
-		Runtime: RuntimeState{
-			Halted:   fileExists(s.haltFile),
-			HaltFile: s.haltFile,
-		},
-		Counts: make(map[string]int64),
+		Runtime:     s.runtimeState(),
+		Counts:      make(map[string]int64),
 	}
 
 	loaders := []struct {
@@ -421,6 +436,11 @@ func (s *Server) collect(ctx context.Context, query dashboardQuery) (Data, error
 		{"orders", func() error {
 			records, err := s.loadOrders(ctx, query)
 			data.Orders = records
+			return err
+		}},
+		{"execution stats", func() error {
+			record, err := s.loadExecutionStats(ctx, query)
+			data.ExecutionStats = record
 			return err
 		}},
 		{"risk events", func() error {
@@ -770,6 +790,63 @@ LIMIT 12;
 		records = append(records, record)
 	}
 	return records, rows.Err()
+}
+
+func (s *Server) loadExecutionStats(ctx context.Context, query dashboardQuery) (ExecutionStats, error) {
+	var stats ExecutionStats
+	err := s.db.QueryRowContext(ctx, `
+WITH current_strategy AS (
+	SELECT strategy_id
+	FROM signals
+	WHERE exchange = ? AND market_type = ? AND symbol = ?
+	ORDER BY signal_time DESC, id DESC
+	LIMIT 1
+),
+paper_stats AS (
+	SELECT
+		COUNT(*) AS paper_positions,
+		COALESCE(SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END), 0) AS paper_closed,
+		COALESCE(SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END), 0) AS paper_open
+	FROM paper_positions
+	WHERE exchange = ? AND market_type = ? AND symbol = ?
+		AND NOT `+demoAccountPredicate("account_id")+`
+		AND strategy_id IN (SELECT strategy_id FROM current_strategy)
+),
+order_stats AS (
+	SELECT
+		COALESCE(SUM(CASE WHEN status IN ('dry_run_accepted', 'submitted', 'filled') THEN 1 ELSE 0 END), 0) AS accepted_orders,
+		COALESCE(SUM(CASE WHEN status = 'risk_halted' THEN 1 ELSE 0 END), 0) AS risk_halted_orders,
+		COALESCE(SUM(CASE WHEN status = 'risk_rejected' THEN 1 ELSE 0 END), 0) AS risk_rejected_orders
+	FROM orders
+	WHERE exchange = ? AND market_type = ? AND symbol = ?
+		AND NOT `+demoAccountPredicate("account_id")+`
+		AND strategy_id IN (SELECT strategy_id FROM current_strategy)
+),
+signal_stats AS (
+	SELECT
+		COALESCE(SUM(CASE WHEN action IN ('buy', 'sell', 'short', 'cover') THEN 1 ELSE 0 END), 0) AS entry_signals
+	FROM signals
+	WHERE exchange = ? AND market_type = ? AND symbol = ?
+		AND strategy_id IN (SELECT strategy_id FROM current_strategy)
+)
+SELECT paper_positions, paper_closed, paper_open,
+	accepted_orders, risk_halted_orders, risk_rejected_orders, entry_signals
+FROM paper_stats, order_stats, signal_stats;
+`,
+		query.Exchange, query.MarketType, query.Symbol,
+		query.Exchange, query.MarketType, query.Symbol,
+		query.Exchange, query.MarketType, query.Symbol,
+		query.Exchange, query.MarketType, query.Symbol,
+	).Scan(
+		&stats.PaperPositions,
+		&stats.PaperClosed,
+		&stats.PaperOpen,
+		&stats.AcceptedOrders,
+		&stats.RiskHaltedOrders,
+		&stats.RiskRejectedOrders,
+		&stats.EntrySignals,
+	)
+	return stats, err
 }
 
 func (s *Server) loadRiskEvents(ctx context.Context) ([]RiskEvent, error) {
@@ -1193,6 +1270,37 @@ func reverse(records []CandlePoint) {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+func (s *Server) runtimeState() RuntimeState {
+	state := RuntimeState{
+		Halted:    fileExists(s.haltFile),
+		HaltFile:  s.haltFile,
+		ReadyFile: filepath.Join(filepath.Dir(s.haltFile), "paper-local-stack.ready"),
+	}
+	raw, err := os.ReadFile(state.ReadyFile)
+	if err != nil {
+		return state
+	}
+	fields := parseRuntimeReadyFields(string(raw))
+	state.AccountID = fields["ACCOUNT"]
+	state.LiveAccountID = fields["LIVE_ACCOUNT"]
+	state.LiveTrading = strings.EqualFold(fields["ONEBULLEX_LIVE_TRADING"], "true")
+	state.SubmitExchange = strings.EqualFold(fields["SUBMIT_EXCHANGE"], "true")
+	state.Symbol = fields["SYMBOL"]
+	return state
+}
+
+func parseRuntimeReadyFields(raw string) map[string]string {
+	fields := make(map[string]string)
+	for _, token := range strings.Fields(raw) {
+		key, value, ok := strings.Cut(token, "=")
+		if !ok {
+			continue
+		}
+		fields[key] = value
+	}
+	return fields
 }
 
 func isMissingTable(err error) bool {

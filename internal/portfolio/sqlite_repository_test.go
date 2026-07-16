@@ -70,6 +70,54 @@ func TestSQLiteRepositorySnapshots(t *testing.T) {
 	}
 }
 
+func TestLatestLiveBalanceSnapshotIgnoresPaperRows(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	db.SetMaxOpenConns(1)
+	if err := InitSQLiteSchema(ctx, db); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	repo := NewSQLiteRepository(db)
+	liveTime := time.Date(2026, 7, 15, 11, 34, 0, 0, time.UTC)
+	if _, err := repo.SaveBalanceSnapshot(ctx, BalanceSnapshot{
+		AccountID:        "live-main",
+		Exchange:         "onebullex",
+		Asset:            "USDT",
+		Free:             26.5,
+		Total:            26.5,
+		AvailableBalance: "26.5",
+		WalletBalance:    "26.5",
+		SnapshotTime:     liveTime,
+	}); err != nil {
+		t.Fatalf("save live balance: %v", err)
+	}
+	if _, err := repo.SaveBalanceSnapshot(ctx, BalanceSnapshot{
+		AccountID:    "live-main",
+		Exchange:     "onebullex",
+		Asset:        "USDT",
+		Free:         1000,
+		Total:        1000,
+		SnapshotTime: liveTime.Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("save paper balance: %v", err)
+	}
+
+	got, err := repo.LatestLiveBalanceSnapshot(ctx, "live-main", "onebullex", "usdt")
+	if err != nil {
+		t.Fatalf("latest live balance: %v", err)
+	}
+	if got.Total != 26.5 || got.AvailableBalance != "26.5" {
+		t.Fatalf("latest live balance = %+v, want real 26.5 row", got)
+	}
+}
+
 func TestSQLiteRepositoryPositionSnapshotsKeepMarketTypesSeparate(t *testing.T) {
 	t.Parallel()
 
