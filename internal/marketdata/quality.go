@@ -21,20 +21,26 @@ func IntervalDuration(interval string) (time.Duration, error) {
 		return 0, fmt.Errorf("unsupported interval %q", interval)
 	}
 
+	var unit time.Duration
 	switch interval[len(interval)-1] {
 	case 'm':
-		return time.Duration(value) * time.Minute, nil
+		unit = time.Minute
 	case 'h':
-		return time.Duration(value) * time.Hour, nil
+		unit = time.Hour
 	case 'd':
-		return time.Duration(value) * 24 * time.Hour, nil
+		unit = 24 * time.Hour
 	case 'w':
-		return time.Duration(value) * 7 * 24 * time.Hour, nil
+		unit = 7 * 24 * time.Hour
 	case 'M':
 		return 0, errorsUnsupportedMonthlyInterval(interval)
 	default:
 		return 0, fmt.Errorf("unsupported interval %q", interval)
 	}
+	const maxDuration = time.Duration(1<<63 - 1)
+	if time.Duration(value) > maxDuration/unit {
+		return 0, fmt.Errorf("unsupported interval %q: duration exceeds maximum", interval)
+	}
+	return time.Duration(value) * unit, nil
 }
 
 func CheckCandleCoverage(candles []Candle, query CandleQuery) (CandleCoverage, error) {
